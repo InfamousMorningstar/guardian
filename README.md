@@ -2,6 +2,19 @@
 
 A Docker container that automatically manages Plex user access based on activity levels. Perfect for TrueNAS Scale deployment.
 
+## Email Templates
+
+All notification emails use a **terminal-style design** with Centauri branding. View the HTML showcase:
+
+👉 **[Email Templates Preview](email-preview.html)** - Open this file in your browser to see all 5 email templates
+
+Templates include:
+- 🎉 **Welcome Email** - Sent to new users
+- ⚠️ **Warning Email** - Sent at 27 days of inactivity
+- 🚫 **Removal Email** - Sent when user is removed at 30 days
+- 👤 **Admin Join Notification** - Admin alert for new users
+- ❌ **Admin Removal Notification** - Admin alert for removed users
+
 ## Features
 
 - **Automatic User Onboarding**: Sends welcome emails to new Plex users
@@ -12,6 +25,7 @@ A Docker container that automatically manages Plex user access based on activity
 - **Admin Alerts**: Detailed admin notifications for all actions
 - **VIP Protection**: Protect friends and family by email or username
 - **Dry Run Mode**: Test configuration without making changes
+- **Rejoined User Detection**: Automatically re-welcomes users who rejoin after removal
 
 ## TrueNAS Scale Deployment
 
@@ -73,7 +87,71 @@ Only these files are needed for deployment:
 3. Security → 2-Step Verification → App passwords
 4. Generate app password for "Mail"
 
-## TrueNAS Scale Setup
+## TrueNAS Scale Setup (Portainer)
+
+### 1. Create .env File on TrueNAS
+
+SSH into your TrueNAS and create the environment file:
+
+```bash
+# Create the config directory
+mkdir -p /mnt/app-pool/config/autoprune/state
+
+# Create the .env file
+nano /mnt/app-pool/config/autoprune/.env
+```
+
+Add your environment variables:
+```bash
+PLEX_TOKEN=your_plex_token_here
+PLEX_SERVER_NAME=your_plex_server_name
+TAUTULLI_URL=http://192.168.1.113:8181
+TAUTULLI_API_KEY=your_tautulli_api_key
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=your_email@gmail.com
+SMTP_PASSWORD=your_app_password
+SMTP_FROM=your_email@gmail.com
+ADMIN_EMAIL=admin@example.com
+DISCORD_WEBHOOK=your_discord_webhook_url
+WARN_DAYS=27
+KICK_DAYS=30
+CHECK_NEW_USERS_SECS=120
+CHECK_INACTIVITY_SECS=1800
+VIP_NAMES=friend1,friend2,family_member
+DRY_RUN=true
+```
+
+**Save and exit** (Ctrl+O, Enter, Ctrl+X in nano)
+
+### 2. Deploy Stack in Portainer
+
+1. Open Portainer on TrueNAS
+2. Go to **Stacks** → **Add Stack**
+3. Name: `autoprune`
+4. Build method: **Git Repository**
+   - Repository URL: `https://github.com/InfamousMorningstar/guardian`
+   - Repository reference: `refs/heads/main`
+   - Compose path: `portainer-stack.yml`
+5. Click **Deploy the stack**
+
+### 3. Benefits of This Approach
+
+✅ **Environment variables persist** - Stored in `/mnt/app-pool/config/autoprune/.env`  
+✅ **Easy updates** - Just "Pull and redeploy" in Portainer  
+✅ **No credential loss** - `.env` file stays on TrueNAS  
+✅ **Git-based deployment** - Always deploy latest code from GitHub  
+✅ **Backup friendly** - Just backup `/mnt/app-pool/config/autoprune/`
+
+### 4. Updating the Container
+
+When you push code changes to GitHub:
+1. Go to Portainer → Stacks → autoprune
+2. Click **Pull and redeploy**
+3. Environment variables automatically loaded from `.env` file
+4. No need to re-enter credentials! 🎉
+
+## TrueNAS Scale Setup (Native Docker App)
 
 ### 1. Create Custom App
 
@@ -159,14 +237,19 @@ VIP_NAMES=mom,dad,brother,sister,bestfriend
 
 ## File Structure
 
-Essential files for TrueNAS Scale deployment:
+Essential files for deployment:
 ```
 guardian/
-├── Dockerfile          # Container build instructions
-├── main.py             # Application code  
-├── requirements.txt    # Python dependencies
-├── .dockerignore      # Build optimization
-└── README.md          # This documentation
+├── Dockerfile              # Container build instructions
+├── main.py                 # Application code  
+├── requirements.txt        # Python dependencies
+├── docker-compose.yml      # Local development
+├── portainer-stack.yml     # TrueNAS/Portainer deployment
+├── email-preview.html      # Email templates showcase
+├── .dockerignore          # Build optimization
+├── .gitignore             # Git exclusions
+├── .env.example           # Environment variables template
+└── README.md              # This documentation
 ```
 
 ## Support

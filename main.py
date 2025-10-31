@@ -858,6 +858,7 @@ def fast_join_watcher():
     log("[join] loop thread started")
     state = load_state()
     welcomed = state.get("welcomed", {})
+    removed = state.get("removed", {})
     acct = get_plex_account()
     tick = 0
     while not stop_event.is_set():
@@ -883,8 +884,40 @@ def fast_join_watcher():
                 
             now = datetime.now(timezone.utc)
             new_count = 0
+            rejoined_count = 0
             for u in friends:
                 uid = str(u.id)
+                
+                # Check if user was previously removed but is back now
+                if uid in removed:
+                    display = u.title or u.username or "there"
+                    log(f"[join] REJOINED: {display} ({u.email or 'no email'}) id={uid} - was in removed section")
+                    
+                    if DRY_RUN:
+                        log(f"[DRY RUN] Would move {display} from removed to welcomed and send welcome email")
+                    else:
+                        # Send welcome email for rejoined user
+                        if u.email:
+                            try:
+                                send_email(u.email, "Access confirmed", welcome_email_html(display))
+                                log(f"[join] welcome sent to rejoined user -> {u.email}")
+                            except Exception as e:
+                                log(f"[join] welcome email error: {e}")
+                        try:
+                            send_email(ADMIN_EMAIL, "Centauri: User rejoined",
+                                       admin_join_html({"id": uid, "title": display, "email": u.email}))
+                            log(f"[join] admin notice sent for rejoined user")
+                        except Exception as e:
+                            log(f"[join] admin email error: {e}")
+                        send_discord(f"🔄 User rejoined Plex: {display} ({u.email or 'no email'}) - previously removed")
+                        
+                        # Move from removed to welcomed
+                        del removed[uid]
+                    
+                    welcomed[uid] = now.isoformat()
+                    rejoined_count += 1
+                    continue
+                
                 if uid in welcomed:
                     continue
                 # New user detected (not yet welcomed)
@@ -910,9 +943,12 @@ def fast_join_watcher():
                 
                 welcomed[uid] = now.isoformat()
                 new_count += 1
-            if new_count == 0:
+            if new_count == 0 and rejoined_count == 0:
                 log("[join] no new users")
+            elif rejoined_count > 0:
+                log(f"[join] {rejoined_count} user(s) rejoined, {new_count} new user(s)")
             state["welcomed"] = welcomed
+            state["removed"] = removed
             save_state(state)
         except Exception as e:
             log(f"[join] error: {e}")
