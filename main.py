@@ -47,6 +47,9 @@ VIP_EMAILS = [ADMIN_EMAIL.lower()]  # Admin is always VIP
 VIP_NAMES_STR = os.environ.get("VIP_NAMES", "")
 VIP_NAMES = [name.strip().lower() for name in VIP_NAMES_STR.split(",") if name.strip()]
 
+# Dry run mode - when enabled, no actual removals or emails are sent
+DRY_RUN = os.environ.get("DRY_RUN", "true").lower() in ("true", "1", "yes")
+
 STATE_DIR  = "/app/state"
 STATE_FILE = f"{STATE_DIR}/state.json"
 os.makedirs(STATE_DIR, exist_ok=True)
@@ -887,19 +890,24 @@ def fast_join_watcher():
                 # New user detected (not yet welcomed)
                 display = u.title or u.username or "there"
                 log(f"[join] NEW: {display} ({u.email or 'no email'}) id={uid}")
-                if u.email:
+                
+                if DRY_RUN:
+                    log(f"[DRY RUN] Would send welcome email to {display} ({u.email or 'no email'})")
+                else:
+                    if u.email:
+                        try:
+                            send_email(u.email, "Access confirmed", welcome_email_html(display))
+                            log(f"[join] welcome sent -> {u.email}")
+                        except Exception as e:
+                            log(f"[join] welcome email error: {e}")
                     try:
-                        send_email(u.email, "Access confirmed", welcome_email_html(display))
-                        log(f"[join] welcome sent -> {u.email}")
+                        send_email(ADMIN_EMAIL, "Centauri: New member onboarded",
+                                   admin_join_html({"id": uid, "title": display, "email": u.email}))
+                        log(f"[join] admin notice sent")
                     except Exception as e:
-                        log(f"[join] welcome email error: {e}")
-                try:
-                    send_email(ADMIN_EMAIL, "Centauri: New member onboarded",
-                               admin_join_html({"id": uid, "title": display, "email": u.email}))
-                    log(f"[join] admin notice sent")
-                except Exception as e:
-                    log(f"[join] admin email error: {e}")
-                send_discord(f"👤 New Plex user joined: {display} ({u.email or 'no email'})")
+                        log(f"[join] admin email error: {e}")
+                    send_discord(f"👤 New Plex user joined: {display} ({u.email or 'no email'})")
+                
                 welcomed[uid] = now.isoformat()
                 new_count += 1
             if new_count == 0:
@@ -1014,39 +1022,48 @@ def slow_inactivity_watcher():
                 log(f"[inactive] {display}: last={last_watch}, days={days}")
 
                 if days >= WARN_DAYS and days < KICK_DAYS and uid not in warned:
-                    if email:
+                    if DRY_RUN:
+                        log(f"[DRY RUN] Would warn {display} ({email or 'no email'}) - {days} days inactive")
+                    else:
+                        if email:
+                            try:
+                                send_email(email, "Inactivity notice", warn_email_html(display, days))
+                                log(f"[inactive] warn sent -> {email}")
+                            except Exception as e:
+                                log(f"[inactive] warn email error: {e}")
                         try:
-                            send_email(email, "Inactivity notice", warn_email_html(display, days))
-                            log(f"[inactive] warn sent -> {email}")
+                            send_email(ADMIN_EMAIL, f"Centauri: Warning sent to {display}",
+                                       f"<p>Warned ~{days}d inactive: {display} ({email or 'no-email'})</p>")
+                            log("[inactive] admin warn notice sent")
                         except Exception as e:
-                            log(f"[inactive] warn email error: {e}")
-                    try:
-                        send_email(ADMIN_EMAIL, f"Centauri: Warning sent to {display}",
-                                   f"<p>Warned ~{days}d inactive: {display} ({email or 'no-email'})</p>")
-                        log("[inactive] admin warn notice sent")
-                    except Exception as e:
-                        log(f"[inactive] admin warn email error: {e}")
-                    send_discord(f"⚠️ Warned {display} (~{days}d inactive)")
+                            log(f"[inactive] admin warn email error: {e}")
+                        send_discord(f"⚠️ Warned {display} (~{days}d inactive)")
                     warned[uid] = now.isoformat()
                     acted = True
 
                 if days >= KICK_DAYS and uid not in removed:
                     reason = f"Inactivity for {days} days (threshold {KICK_DAYS})"
-                    ok = remove_friend(acct, uid)
-                    if email:
+                    
+                    if DRY_RUN:
+                        log(f"[DRY RUN] Would remove {display} ({email or 'no email'}) - {reason}")
+                        ok = False  # Simulated failure in dry run
+                    else:
+                        ok = remove_friend(acct, uid)
+                        if email:
+                            try:
+                                send_email(email, "Access revoked", removal_email_html(display))
+                                log(f"[inactive] removal notice sent -> {email}")
+                            except Exception as e:
+                                log(f"[inactive] removal email error: {e}")
                         try:
-                            send_email(email, "Access revoked", removal_email_html(display))
-                            log(f"[inactive] removal notice sent -> {email}")
+                            send_email(ADMIN_EMAIL, f"Centauri: User removal {'SUCCESS' if ok else 'FAILED'}",
+                                       admin_removed_html({"id":uid,"title":display,"email":email}, reason,
+                                                          "SUCCESS" if ok else "FAILED"))
+                            log("[inactive] admin removal notice sent")
                         except Exception as e:
-                            log(f"[inactive] removal email error: {e}")
-                    try:
-                        send_email(ADMIN_EMAIL, f"Centauri: User removal {'SUCCESS' if ok else 'FAILED'}",
-                                   admin_removed_html({"id":uid,"title":display,"email":email}, reason,
-                                                      "SUCCESS" if ok else "FAILED"))
-                        log("[inactive] admin removal notice sent")
-                    except Exception as e:
-                        log(f"[inactive] admin removal email error: {e}")
-                    send_discord(f"🗑️ Removal {('✅' if ok else '❌')} {display} :: {reason}")
+                            log(f"[inactive] admin removal email error: {e}")
+                        send_discord(f"🗑️ Removal {('✅' if ok else '❌')} {display} :: {reason}")
+                    
                     removed[uid] = {"when": now.isoformat(), "ok": ok, "reason": reason}
                     acted = True
 
@@ -1073,6 +1090,12 @@ if __name__ == "__main__":
         sys.exit(0)
     
     log("Centauri Guardian daemon started.")
+    log(f"[config] DRY_RUN mode: {'ENABLED' if DRY_RUN else 'DISABLED'}")
+    if DRY_RUN:
+        log("[config] ⚠️ DRY_RUN is ON - No emails will be sent, no users will be removed")
+    else:
+        log("[config] ⚡ LIVE MODE - Emails will be sent and users will be removed")
+    
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
     t1 = threading.Thread(target=fast_join_watcher, daemon=True)
