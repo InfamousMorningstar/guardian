@@ -11,6 +11,36 @@ from email.mime.text import MIMEText
 from dateutil import parser as dtp
 
 
+# Load .env file if it exists (for persistent configuration)
+def load_env_file(filepath="/app/.env"):
+    """Load environment variables from a file if it exists."""
+    if os.path.exists(filepath):
+        log(f"Loading environment variables from {filepath}")
+        with open(filepath) as f:
+            for line in f:
+                line = line.strip()
+                # Skip comments and empty lines
+                if not line or line.startswith("#"):
+                    continue
+                # Parse KEY=VALUE
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip()
+                    # Remove quotes if present
+                    if value.startswith('"') and value.endswith('"'):
+                        value = value[1:-1]
+                    elif value.startswith("'") and value.endswith("'"):
+                        value = value[1:-1]
+                    # Only set if not already in environment (env vars take precedence)
+                    if key not in os.environ:
+                        os.environ[key] = value
+        log("Environment variables loaded from file")
+    else:
+        log(f"No .env file found at {filepath}, using environment variables only")
+
+# Load .env file before checking required vars
+load_env_file()
 
 
 REQUIRED_ENVS = [

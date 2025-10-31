@@ -30,3 +30,4 @@ services:
     
     volumes:
       - /mnt/app-pool/config/autoprune/state:/app/state
+      - /mnt/app-pool/config/autoprune/.env:/app/.env:ro

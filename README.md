@@ -2,19 +2,6 @@
 
 A Docker container that automatically manages Plex user access based on activity levels. Perfect for TrueNAS Scale deployment.
 
-## Email Templates
-
-All notification emails use a **terminal-style design** with Centauri branding. View the HTML showcase:
-
-👉 **[Email Templates Preview](email-preview.html)** - Open this file in your browser to see all 5 email templates
-
-Templates include:
-- 🎉 **Welcome Email** - Sent to new users
-- ⚠️ **Warning Email** - Sent at 27 days of inactivity
-- 🚫 **Removal Email** - Sent when user is removed at 30 days
-- 👤 **Admin Join Notification** - Admin alert for new users
-- ❌ **Admin Removal Notification** - Admin alert for removed users
-
 ## Features
 
 - **Automatic User Onboarding**: Sends welcome emails to new Plex users
@@ -25,7 +12,6 @@ Templates include:
 - **Admin Alerts**: Detailed admin notifications for all actions
 - **VIP Protection**: Protect friends and family by email or username
 - **Dry Run Mode**: Test configuration without making changes
-- **Rejoined User Detection**: Automatically re-welcomes users who rejoin after removal
 
 ## TrueNAS Scale Deployment
 
@@ -87,64 +73,7 @@ Only these files are needed for deployment:
 3. Security → 2-Step Verification → App passwords
 4. Generate app password for "Mail"
 
-## TrueNAS Scale Setup (Portainer)
-
-### 1. Deploy Stack in Portainer
-
-1. Open Portainer on TrueNAS
-2. Go to **Stacks** → **Add Stack**
-3. Name: `autoprune`
-4. Build method: **Git Repository**
-   - Repository URL: `https://github.com/InfamousMorningstar/guardian`
-   - Repository reference: `refs/heads/main`
-   - Compose path: `portainer-stack.yml`
-5. **Scroll down to "Environment variables"**
-6. **Add these variables** (use `.env.example` as reference):
-
-```
-PLEX_TOKEN=your_plex_token_here
-PLEX_SERVER_NAME=your_plex_server_name
-TAUTULLI_URL=http://192.168.1.113:8181
-TAUTULLI_API_KEY=your_tautulli_api_key
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USERNAME=your_email@gmail.com
-SMTP_PASSWORD=your_gmail_app_password
-SMTP_FROM="Your Server <your_email@gmail.com>"
-ADMIN_EMAIL=admin@example.com
-DISCORD_WEBHOOK=https://discord.com/api/webhooks/...
-LINK_DISCORD=https://discord.com/users/...
-WARN_DAYS=27
-KICK_DAYS=30
-CHECK_NEW_USERS_SECS=120
-CHECK_INACTIVITY_SECS=1800
-VIP_NAMES=friend1,friend2,family_member
-DRY_RUN=true
-```
-
-7. Click **Deploy the stack**
-
-### 2. Benefits of This Approach
-
-✅ **No manual file creation** - Everything in Portainer UI  
-✅ **Variables persist** - Portainer saves them in its database  
-✅ **Easy updates** - Just "Pull and redeploy" keeps your env vars  
-✅ **Git-based deployment** - Always get latest code from GitHub  
-✅ **Backup friendly** - Export stack from Portainer UI
-
-### 3. Updating the Container
-
-When you push code changes to GitHub:
-1. Go to Portainer → Stacks → autoprune
-2. Click **Pull and redeploy**
-3. Environment variables stay intact! 🎉
-4. Container rebuilds with latest code
-
-**Note:** If Portainer ever loses env vars (known bug), just re-enter them once in the stack editor.
-3. Environment variables automatically loaded from `.env` file
-4. No need to re-enter credentials! 🎉
-
-## TrueNAS Scale Setup (Native Docker App)
+## TrueNAS Scale Setup
 
 ### 1. Create Custom App
 
@@ -230,19 +159,14 @@ VIP_NAMES=mom,dad,brother,sister,bestfriend
 
 ## File Structure
 
-Essential files for deployment:
+Essential files for TrueNAS Scale deployment:
 ```
 guardian/
-├── Dockerfile              # Container build instructions
-├── main.py                 # Application code  
-├── requirements.txt        # Python dependencies
-├── docker-compose.yml      # Local development
-├── portainer-stack.yml     # TrueNAS/Portainer deployment
-├── email-preview.html      # Email templates showcase
-├── .dockerignore          # Build optimization
-├── .gitignore             # Git exclusions
-├── .env.example           # Environment variables template
-└── README.md              # This documentation
+├── Dockerfile          # Container build instructions
+├── main.py             # Application code  
+├── requirements.txt    # Python dependencies
+├── .dockerignore      # Build optimization
+└── README.md          # This documentation
 ```
 
 ## Support
