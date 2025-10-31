@@ -1,0 +1,26 @@
+services:
+  plex-autoprune-daemon:
+    build: .
+    container_name: plex-autoprune-daemon
+    restart: unless-stopped
+    environment:
+      PYTHONUNBUFFERED: "1"
+      TZ: America/Edmonton
+      PLEX_TOKEN: ${PLEX_TOKEN}
+      PLEX_SERVER_NAME: ${PLEX_SERVER_NAME}
+      TAUTULLI_URL: ${TAUTULLI_URL}
+      TAUTULLI_API_KEY: ${TAUTULLI_API_KEY}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_FROM: ${SMTP_FROM}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      WARN_DAYS: ${WARN_DAYS:-27}
+      KICK_DAYS: ${KICK_DAYS:-30}
+      CHECK_NEW_USERS_SECS: ${CHECK_NEW_USERS_SECS:-120}
+      CHECK_INACTIVITY_SECS: ${CHECK_INACTIVITY_SECS:-1800}
+      DRY_RUN: ${DRY_RUN:-true}
+      VIP_NAMES: ${VIP_NAMES:-}
+    volumes:
+      - ./state:/app/state
