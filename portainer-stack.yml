@@ -3,13 +3,29 @@ version: '3.8'
 services:
   autoprune:
     build:
-      context: .
+      context: https://github.com/InfamousMorningstar/guardian.git#main
       dockerfile: Dockerfile
     container_name: autoprune
     restart: unless-stopped
     network_mode: host
-    env_file:
-      - /mnt/app-pool/config/autoprune/.env
+    environment:
+      PLEX_TOKEN: ${PLEX_TOKEN}
+      PLEX_SERVER_NAME: ${PLEX_SERVER_NAME}
+      TAUTULLI_URL: ${TAUTULLI_URL}
+      TAUTULLI_API_KEY: ${TAUTULLI_API_KEY}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_FROM: ${SMTP_FROM}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      DISCORD_WEBHOOK: ${DISCORD_WEBHOOK}
+      WARN_DAYS: ${WARN_DAYS:-27}
+      KICK_DAYS: ${KICK_DAYS:-30}
+      CHECK_NEW_USERS_SECS: ${CHECK_NEW_USERS_SECS:-120}
+      CHECK_INACTIVITY_SECS: ${CHECK_INACTIVITY_SECS:-1800}
+      VIP_NAMES: ${VIP_NAMES}
+      DRY_RUN: ${DRY_RUN:-true}
     
     volumes:
       - /mnt/app-pool/config/autoprune/state:/app/state
