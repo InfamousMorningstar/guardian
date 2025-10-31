@@ -8,40 +8,8 @@ services:
     container_name: autoprune
     restart: unless-stopped
     network_mode: host
-    
-    environment:
-      # Plex Configuration
-      PLEX_TOKEN: ${PLEX_TOKEN}
-      PLEX_SERVER_NAME: ${PLEX_SERVER_NAME}
-      
-      # Tautulli Configuration
-      TAUTULLI_URL: ${TAUTULLI_URL}
-      TAUTULLI_API_KEY: ${TAUTULLI_API_KEY}
-      
-      # SMTP Email Configuration
-      SMTP_HOST: ${SMTP_HOST}
-      SMTP_PORT: ${SMTP_PORT}
-      SMTP_USERNAME: ${SMTP_USERNAME}
-      SMTP_PASSWORD: ${SMTP_PASSWORD}
-      SMTP_FROM: ${SMTP_FROM}
-      ADMIN_EMAIL: ${ADMIN_EMAIL}
-      
-      # Discord Webhook (optional)
-      DISCORD_WEBHOOK: ${DISCORD_WEBHOOK:-}
-      
-      # Inactivity Thresholds (in days)
-      WARN_DAYS: ${WARN_DAYS:-27}
-      KICK_DAYS: ${KICK_DAYS:-30}
-      
-      # Check Intervals (in seconds)
-      CHECK_NEW_USERS_SECS: ${CHECK_NEW_USERS_SECS:-120}
-      CHECK_INACTIVITY_SECS: ${CHECK_INACTIVITY_SECS:-1800}
-      
-      # VIP Users (comma-separated)
-      VIP_NAMES: ${VIP_NAMES:-}
-      
-      # Dry Run Mode
-      DRY_RUN: ${DRY_RUN:-true}
+    env_file:
+      - .env
     
     volumes:
       - /mnt/app-pool/config/autoprune/state:/app/state
