@@ -1049,20 +1049,32 @@ def slow_inactivity_watcher():
                         ok = False  # Simulated failure in dry run
                     else:
                         ok = remove_friend(acct, uid)
-                        if email:
+                        
+                        if ok:
+                            # Removal succeeded - notify user and admin
+                            if email:
+                                try:
+                                    send_email(email, "Access revoked", removal_email_html(display))
+                                    log(f"[inactive] removal notice sent -> {email}")
+                                except Exception as e:
+                                    log(f"[inactive] removal email error: {e}")
                             try:
-                                send_email(email, "Access revoked", removal_email_html(display))
-                                log(f"[inactive] removal notice sent -> {email}")
+                                send_email(ADMIN_EMAIL, f"Centauri: User removal SUCCESS",
+                                           admin_removed_html({"id":uid,"title":display,"email":email}, reason, "SUCCESS"))
+                                log("[inactive] admin removal SUCCESS notice sent")
                             except Exception as e:
-                                log(f"[inactive] removal email error: {e}")
-                        try:
-                            send_email(ADMIN_EMAIL, f"Centauri: User removal {'SUCCESS' if ok else 'FAILED'}",
-                                       admin_removed_html({"id":uid,"title":display,"email":email}, reason,
-                                                          "SUCCESS" if ok else "FAILED"))
-                            log("[inactive] admin removal notice sent")
-                        except Exception as e:
-                            log(f"[inactive] admin removal email error: {e}")
-                        send_discord(f"🗑️ Removal {('✅' if ok else '❌')} {display} :: {reason}")
+                                log(f"[inactive] admin removal email error: {e}")
+                            send_discord(f"🗑️ Removal ✅ {display} :: {reason}")
+                        else:
+                            # Removal failed - only notify admin, don't email the user
+                            log(f"[inactive] removal FAILED for {display} - user NOT notified")
+                            try:
+                                send_email(ADMIN_EMAIL, f"Centauri: User removal FAILED",
+                                           admin_removed_html({"id":uid,"title":display,"email":email}, reason, "FAILED"))
+                                log("[inactive] admin removal FAILED notice sent")
+                            except Exception as e:
+                                log(f"[inactive] admin removal email error: {e}")
+                            send_discord(f"🗑️ Removal ❌ {display} :: {reason}")
                     
                     removed[uid] = {"when": now.isoformat(), "ok": ok, "reason": reason}
                     acted = True
