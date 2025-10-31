@@ -9,7 +9,7 @@ services:
     restart: unless-stopped
     network_mode: host
     env_file:
-      - .env
+      - /mnt/app-pool/config/autoprune/.env
     
     volumes:
       - /mnt/app-pool/config/autoprune/state:/app/state

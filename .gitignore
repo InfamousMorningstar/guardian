@@ -2,8 +2,8 @@
 .env
 
 # State file (contains user data and tracking info)
-state/
-state.json
+# state/  # COMMENTED OUT - including state in git for easy deployment
+# state.json
 
 # Python
 __pycache__/
