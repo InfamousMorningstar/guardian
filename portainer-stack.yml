@@ -1,12 +1,13 @@
 version: '3.8'
 
 services:
-  plex-autoprune-daemon:
+  autoprune:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: plex-autoprune-daemon
+    container_name: autoprune
     restart: unless-stopped
+    network_mode: host
     
     environment:
       # Plex Configuration
@@ -43,11 +44,4 @@ services:
       DRY_RUN: ${DRY_RUN:-true}
     
     volumes:
-      - ./state:/app/state
-    
-    networks:
-      - plex-guardian
-
-networks:
-  plex-guardian:
-    driver: bridge
+      - /mnt/app-pool/config/autoprune/state:/app/state
