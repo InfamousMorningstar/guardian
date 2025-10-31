@@ -859,17 +859,16 @@ def fast_join_watcher():
     state = load_state()
     welcomed = state.get("welcomed", {})
     removed = state.get("removed", {})
-    acct = get_plex_account()
     tick = 0
     while not stop_event.is_set():
         tick += 1
         try:
             log(f"[join] tick {tick} – checking new users…")
             # Retry logic for Plex API calls
-            friends = None
+            all_users = None
             for attempt in range(3):
                 try:
-                    friends = acct.users()
+                    all_users = plex_get_users()
                     break
                 except Exception as e:
                     if attempt < 2:
@@ -878,38 +877,39 @@ def fast_join_watcher():
                     else:
                         raise
             
-            if friends is None:
+            if all_users is None:
                 log("[join] Could not fetch users after 3 attempts, skipping this tick")
                 continue
                 
             now = datetime.now(timezone.utc)
             new_count = 0
             rejoined_count = 0
-            for u in friends:
-                uid = str(u.id)
+            for u in all_users:
+                uid = str(u["id"])
+                display = u["title"] or u["username"] or "there"
+                email = u["email"]
                 
                 # Check if user was previously removed but is back now
                 if uid in removed:
-                    display = u.title or u.username or "there"
-                    log(f"[join] REJOINED: {display} ({u.email or 'no email'}) id={uid} - was in removed section")
+                    log(f"[join] REJOINED: {display} ({email or 'no email'}) id={uid} - was in removed section")
                     
                     if DRY_RUN:
                         log(f"[DRY RUN] Would move {display} from removed to welcomed and send welcome email")
                     else:
                         # Send welcome email for rejoined user
-                        if u.email:
+                        if email:
                             try:
-                                send_email(u.email, "Access confirmed", welcome_email_html(display))
-                                log(f"[join] welcome sent to rejoined user -> {u.email}")
+                                send_email(email, "Access confirmed", welcome_email_html(display))
+                                log(f"[join] welcome sent to rejoined user -> {email}")
                             except Exception as e:
                                 log(f"[join] welcome email error: {e}")
                         try:
                             send_email(ADMIN_EMAIL, "Centauri: User rejoined",
-                                       admin_join_html({"id": uid, "title": display, "email": u.email}))
+                                       admin_join_html({"id": uid, "title": display, "email": email}))
                             log(f"[join] admin notice sent for rejoined user")
                         except Exception as e:
                             log(f"[join] admin email error: {e}")
-                        send_discord(f"🔄 User rejoined Plex: {display} ({u.email or 'no email'}) - previously removed")
+                        send_discord(f"🔄 User rejoined Plex: {display} ({email or 'no email'}) - previously removed")
                         
                         # Move from removed to welcomed
                         del removed[uid]
@@ -921,25 +921,24 @@ def fast_join_watcher():
                 if uid in welcomed:
                     continue
                 # New user detected (not yet welcomed)
-                display = u.title or u.username or "there"
-                log(f"[join] NEW: {display} ({u.email or 'no email'}) id={uid}")
+                log(f"[join] NEW: {display} ({email or 'no email'}) id={uid}")
                 
                 if DRY_RUN:
-                    log(f"[DRY RUN] Would send welcome email to {display} ({u.email or 'no email'})")
+                    log(f"[DRY RUN] Would send welcome email to {display} ({email or 'no email'})")
                 else:
-                    if u.email:
+                    if email:
                         try:
-                            send_email(u.email, "Access confirmed", welcome_email_html(display))
-                            log(f"[join] welcome sent -> {u.email}")
+                            send_email(email, "Access confirmed", welcome_email_html(display))
+                            log(f"[join] welcome sent -> {email}")
                         except Exception as e:
                             log(f"[join] welcome email error: {e}")
                     try:
                         send_email(ADMIN_EMAIL, "Centauri: New member onboarded",
-                                   admin_join_html({"id": uid, "title": display, "email": u.email}))
+                                   admin_join_html({"id": uid, "title": display, "email": email}))
                         log(f"[join] admin notice sent")
                     except Exception as e:
                         log(f"[join] admin email error: {e}")
-                    send_discord(f"👤 New Plex user joined: {display} ({u.email or 'no email'})")
+                    send_discord(f"👤 New Plex user joined: {display} ({email or 'no email'})")
                 
                 welcomed[uid] = now.isoformat()
                 new_count += 1
@@ -961,8 +960,7 @@ def slow_inactivity_watcher():
     warned = state.get("warned", {})
     removed = state.get("removed", {})
     welcomed = state.get("welcomed", {})  # Track when users joined
-    acct = get_plex_account()
-    server = get_plex_server_resource(acct)
+    server = get_plex_server_resource(get_plex_account())
     tick = 0
 
     while not stop_event.is_set():
@@ -974,7 +972,7 @@ def slow_inactivity_watcher():
             plex_users = None
             for attempt in range(3):
                 try:
-                    plex_users = acct.users()
+                    plex_users = plex_get_users()
                     break
                 except Exception as e:
                     if attempt < 2:
@@ -987,8 +985,8 @@ def slow_inactivity_watcher():
                 log("[inactive] Could not fetch users after 3 attempts, skipping this tick")
                 continue
                 
-            plex_by_email = {(u.email or "").lower(): u for u in plex_users}
-            plex_by_username = {(u.username or "").lower(): u for u in plex_users}
+            plex_by_email = {(u["email"] or "").lower(): u for u in plex_users}
+            plex_by_username = {(u["username"] or "").lower(): u for u in plex_users}
 
             # Retry logic for Tautulli API calls
             t_users = None
@@ -1017,10 +1015,10 @@ def slow_inactivity_watcher():
                 pu = plex_by_email.get(temail) or plex_by_username.get(tuser)
                 if not pu:
                     continue
-                uid = str(pu.id)
-                display = pu.title or pu.username or "there"
-                email = pu.email
-                username = (pu.username or "").lower()
+                uid = str(pu["id"])
+                display = pu["title"] or pu["username"] or "there"
+                email = pu["email"]
+                username = (pu["username"] or "").lower()
 
                 # Check VIP protection (email or username)
                 if (email or "").lower() in VIP_EMAILS or username in VIP_NAMES:
@@ -1048,9 +1046,10 @@ def slow_inactivity_watcher():
                         last_watch = join_date + timedelta(hours=24)
                     except Exception:
                         pass
-                if last_watch is None and getattr(pu, "createdAt", None):
+                if last_watch is None and pu.get("createdAt"):
                     try:
-                        last_watch = pu.createdAt.replace(tzinfo=timezone.utc)
+                        created_at = datetime.fromisoformat(pu["createdAt"])
+                        last_watch = created_at.replace(tzinfo=timezone.utc)
                     except Exception:
                         pass
 
@@ -1084,7 +1083,7 @@ def slow_inactivity_watcher():
                         log(f"[DRY RUN] Would remove {display} ({email or 'no email'}) - {reason}")
                         ok = False  # Simulated failure in dry run
                     else:
-                        ok = remove_friend(acct, uid)
+                        ok = remove_friend(get_plex_account(), uid)
                         
                         if ok:
                             # Removal succeeded - notify user and admin
