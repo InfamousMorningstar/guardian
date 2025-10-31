@@ -89,42 +89,7 @@ Only these files are needed for deployment:
 
 ## TrueNAS Scale Setup (Portainer)
 
-### 1. Create .env File on TrueNAS
-
-SSH into your TrueNAS and create the environment file:
-
-```bash
-# Create the config directory
-mkdir -p /mnt/app-pool/config/autoprune/state
-
-# Create the .env file
-nano /mnt/app-pool/config/autoprune/.env
-```
-
-Add your environment variables:
-```bash
-PLEX_TOKEN=your_plex_token_here
-PLEX_SERVER_NAME=your_plex_server_name
-TAUTULLI_URL=http://192.168.1.113:8181
-TAUTULLI_API_KEY=your_tautulli_api_key
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USERNAME=your_email@gmail.com
-SMTP_PASSWORD=your_app_password
-SMTP_FROM=your_email@gmail.com
-ADMIN_EMAIL=admin@example.com
-DISCORD_WEBHOOK=your_discord_webhook_url
-WARN_DAYS=27
-KICK_DAYS=30
-CHECK_NEW_USERS_SECS=120
-CHECK_INACTIVITY_SECS=1800
-VIP_NAMES=friend1,friend2,family_member
-DRY_RUN=true
-```
-
-**Save and exit** (Ctrl+O, Enter, Ctrl+X in nano)
-
-### 2. Deploy Stack in Portainer
+### 1. Deploy Stack in Portainer
 
 1. Open Portainer on TrueNAS
 2. Go to **Stacks** → **Add Stack**
@@ -133,21 +98,49 @@ DRY_RUN=true
    - Repository URL: `https://github.com/InfamousMorningstar/guardian`
    - Repository reference: `refs/heads/main`
    - Compose path: `portainer-stack.yml`
-5. Click **Deploy the stack**
+5. **Scroll down to "Environment variables"**
+6. **Add these variables** (use `.env.example` as reference):
 
-### 3. Benefits of This Approach
+```
+PLEX_TOKEN=your_plex_token_here
+PLEX_SERVER_NAME=your_plex_server_name
+TAUTULLI_URL=http://192.168.1.113:8181
+TAUTULLI_API_KEY=your_tautulli_api_key
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=your_email@gmail.com
+SMTP_PASSWORD=your_gmail_app_password
+SMTP_FROM="Your Server <your_email@gmail.com>"
+ADMIN_EMAIL=admin@example.com
+DISCORD_WEBHOOK=https://discord.com/api/webhooks/...
+LINK_DISCORD=https://discord.com/users/...
+WARN_DAYS=27
+KICK_DAYS=30
+CHECK_NEW_USERS_SECS=120
+CHECK_INACTIVITY_SECS=1800
+VIP_NAMES=friend1,friend2,family_member
+DRY_RUN=true
+```
 
-✅ **Environment variables persist** - Stored in `/mnt/app-pool/config/autoprune/.env`  
-✅ **Easy updates** - Just "Pull and redeploy" in Portainer  
-✅ **No credential loss** - `.env` file stays on TrueNAS  
-✅ **Git-based deployment** - Always deploy latest code from GitHub  
-✅ **Backup friendly** - Just backup `/mnt/app-pool/config/autoprune/`
+7. Click **Deploy the stack**
 
-### 4. Updating the Container
+### 2. Benefits of This Approach
+
+✅ **No manual file creation** - Everything in Portainer UI  
+✅ **Variables persist** - Portainer saves them in its database  
+✅ **Easy updates** - Just "Pull and redeploy" keeps your env vars  
+✅ **Git-based deployment** - Always get latest code from GitHub  
+✅ **Backup friendly** - Export stack from Portainer UI
+
+### 3. Updating the Container
 
 When you push code changes to GitHub:
 1. Go to Portainer → Stacks → autoprune
 2. Click **Pull and redeploy**
+3. Environment variables stay intact! 🎉
+4. Container rebuilds with latest code
+
+**Note:** If Portainer ever loses env vars (known bug), just re-enter them once in the stack editor.
 3. Environment variables automatically loaded from `.env` file
 4. No need to re-enter credentials! 🎉
 
