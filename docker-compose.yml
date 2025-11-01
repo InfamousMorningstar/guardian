@@ -1,9 +1,9 @@
 services:
-  autoprune:
+  plex-autoprune-daemon:
     build: .
-    container_name: autoprune
+    container_name: plex-autoprune-daemon
     restart: unless-stopped
-    network_mode: host
+    network_mode: "host"
     environment:
       PYTHONUNBUFFERED: "1"
       TZ: America/Edmonton
@@ -24,5 +24,7 @@ services:
       DRY_RUN: ${DRY_RUN:-true}
       VIP_NAMES: ${VIP_NAMES:-}
       DISCORD_WEBHOOK: ${DISCORD_WEBHOOK:-}
+      LINK_DISCORD: ${LINK_DISCORD:-}
     volumes:
-      - /mnt/app-pool/config/autoprune/state:/app/state
+      - ./state:/app/state
+      - ./main.py:/app/main.py:ro

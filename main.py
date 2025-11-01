@@ -11,36 +11,6 @@ from email.mime.text import MIMEText
 from dateutil import parser as dtp
 
 
-# Load .env file if it exists (for persistent configuration)
-def load_env_file(filepath="/app/.env"):
-    """Load environment variables from a file if it exists."""
-    if os.path.exists(filepath):
-        log(f"Loading environment variables from {filepath}")
-        with open(filepath) as f:
-            for line in f:
-                line = line.strip()
-                # Skip comments and empty lines
-                if not line or line.startswith("#"):
-                    continue
-                # Parse KEY=VALUE
-                if "=" in line:
-                    key, value = line.split("=", 1)
-                    key = key.strip()
-                    value = value.strip()
-                    # Remove quotes if present
-                    if value.startswith('"') and value.endswith('"'):
-                        value = value[1:-1]
-                    elif value.startswith("'") and value.endswith("'"):
-                        value = value[1:-1]
-                    # Only set if not already in environment (env vars take precedence)
-                    if key not in os.environ:
-                        os.environ[key] = value
-        log("Environment variables loaded from file")
-    else:
-        log(f"No .env file found at {filepath}, using environment variables only")
-
-# Load .env file before checking required vars
-load_env_file()
 
 
 REQUIRED_ENVS = [
@@ -71,14 +41,14 @@ KICK_DAYS        = int(os.environ.get("KICK_DAYS","30"))
 CHECK_NEW_USERS_SECS   = int(os.environ.get("CHECK_NEW_USERS_SECS","120"))
 CHECK_INACTIVITY_SECS  = int(os.environ.get("CHECK_INACTIVITY_SECS","1800"))
 
+# Dry run mode - if true, log actions but don't actually remove users
+DRY_RUN = os.environ.get("DRY_RUN", "false").lower() in ("true", "1", "yes")
+
 # VIP protection - these users are protected from auto-removal
 VIP_EMAILS = [ADMIN_EMAIL.lower()]  # Admin is always VIP
 # Add additional VIP usernames from environment variable (comma-separated)
 VIP_NAMES_STR = os.environ.get("VIP_NAMES", "")
 VIP_NAMES = [name.strip().lower() for name in VIP_NAMES_STR.split(",") if name.strip()]
-
-# Dry run mode - when enabled, no actual removals or emails are sent
-DRY_RUN = os.environ.get("DRY_RUN", "true").lower() in ("true", "1", "yes")
 
 STATE_DIR  = "/app/state"
 STATE_FILE = f"{STATE_DIR}/state.json"
@@ -214,60 +184,39 @@ def plex_get_users():
         })
     return users
 
-def plex_machine_id():
-    # find our server machineIdentifier
-    sr = requests.get("https://plex.tv/api/servers", headers=plex_headers(), timeout=30)
-    sr.raise_for_status()
-    from xml.etree import ElementTree as ET
-    root = ET.fromstring(sr.text)
-    # If server name not specified, pick the first claimed
-    cand = None
-    for s in root.findall("Server"):
-        if not PLEX_SERVER_NAME or s.attrib.get("name")==PLEX_SERVER_NAME:
-            cand = s.attrib.get("machineIdentifier")
-            if PLEX_SERVER_NAME: break
-    if not cand:
-        raise RuntimeError("Could not find Plex server machineIdentifier; check PLEX_SERVER_NAME.")
-    return cand
+def remove_friend(acct, plex_user):
+    """Remove a user from Plex server access using plexapi library
 
-def plex_shared_map(machine_id):
-    # https://plex.tv/api/servers/<machineIdentifier>/shared_servers
-    url = f"https://plex.tv/api/servers/{machine_id}/shared_servers"
-    rr = requests.get(url, headers=plex_headers(), timeout=30)
-    rr.raise_for_status()
-    from xml.etree import ElementTree as ET
-    root = ET.fromstring(rr.text)
-    m = {}
-    for ss in root.findall("SharedServer"):
-        shared_id = ss.attrib.get("id")
-        for lu in ss.findall("SharedUser"):
-            uid = lu.attrib.get("id")
-            m[uid] = shared_id
-    return m
+    Args:
+        acct: MyPlexAccount object
+        plex_user: MyPlexUser object or user identifier (email/username/id)
 
-def plex_remove_user(user_id, shared_id_map):
-    # try DELETE /api/friends/<id>, fallback to /api/shared_servers/<id>
-    url = f"https://plex.tv/api/friends/{user_id}"
-    r = requests.delete(url, headers=plex_headers(), timeout=30)
-    if r.status_code in (200,204):
-        return True
-    sid = shared_id_map.get(user_id)
-    if sid:
-        r = requests.delete(f"https://plex.tv/api/shared_servers/{sid}", headers=plex_headers(), timeout=30)
-        return r.status_code in (200,204)
-    return False
-
-def remove_friend(acct, user_id):
-    """Remove a user from Plex server access"""
+    Returns:
+        bool: True if removal succeeded, False otherwise
+    """
+    user_id = "unknown"
     try:
-        # Get machine ID and shared server mapping
-        machine_id = plex_machine_id()
-        shared_map = plex_shared_map(machine_id)
-        
-        # Use the existing plex_remove_user function
-        return plex_remove_user(user_id, shared_map)
+        # Extract identifier for logging
+        if hasattr(plex_user, 'email'):
+            user_id = f"{plex_user.username or plex_user.email} (ID: {plex_user.id})"
+        else:
+            user_id = str(plex_user)
+
+        log(f"[remove_friend] Attempting to remove user: {user_id}")
+        log(f"[remove_friend] User object type: {type(plex_user)}")
+        log(f"[remove_friend] Account type: {type(acct)}")
+
+        # Use the plexapi library's built-in removeFriend method
+        # This handles all the API calls internally and properly
+        acct.removeFriend(plex_user)
+
+        log(f"[remove_friend] Successfully removed user: {user_id}")
+        return True
+
     except Exception as e:
-        log(f"[remove_friend] error removing user {user_id}: {e}")
+        log(f"[remove_friend] ❌ Exception removing user {user_id}: {e}")
+        log(f"[remove_friend] Exception type: {type(e).__name__}")
+        traceback.print_exc()
         return False
 
 def tautulli(cmd, **params):
@@ -281,6 +230,25 @@ def tautulli(cmd, **params):
 
 def tautulli_users():
     return tautulli("get_users")
+
+def tautulli_delete_user(user_id):
+    """Delete a user from Tautulli database (including all their history)
+    
+    Args:
+        user_id (str): The Tautulli user_id to delete
+        
+    Returns:
+        bool: True if deletion succeeded, False otherwise
+    """
+    try:
+        log(f"[tautulli] Attempting to delete user_id {user_id} from Tautulli database...")
+        tautulli("delete_user", user_id=str(user_id))
+        log(f"[tautulli] ✅ Successfully deleted user_id {user_id} from Tautulli")
+        return True
+    except Exception as e:
+        log(f"[tautulli] ❌ Failed to delete user_id {user_id}: {e}")
+        traceback.print_exc()
+        return False
 
 def tautulli_last_watch(user_id):
     hist = tautulli("get_history", user_id=user_id, length=1, order_column="date", order_dir="desc")
@@ -888,17 +856,17 @@ def fast_join_watcher():
     log("[join] loop thread started")
     state = load_state()
     welcomed = state.get("welcomed", {})
-    removed = state.get("removed", {})
+    acct = get_plex_account()
     tick = 0
     while not stop_event.is_set():
         tick += 1
         try:
             log(f"[join] tick {tick} – checking new users…")
             # Retry logic for Plex API calls
-            all_users = None
+            friends = None
             for attempt in range(3):
                 try:
-                    all_users = plex_get_users()
+                    friends = acct.users()
                     break
                 except Exception as e:
                     if attempt < 2:
@@ -907,77 +875,43 @@ def fast_join_watcher():
                     else:
                         raise
             
-            if all_users is None:
+            if friends is None:
                 log("[join] Could not fetch users after 3 attempts, skipping this tick")
                 continue
                 
             now = datetime.now(timezone.utc)
             new_count = 0
-            rejoined_count = 0
-            for u in all_users:
-                uid = str(u["id"])
-                display = u["title"] or u["username"] or "there"
-                email = u["email"]
-                
-                # Check if user was previously removed but is back now
-                if uid in removed:
-                    log(f"[join] REJOINED: {display} ({email or 'no email'}) id={uid} - was in removed section")
-                    
-                    if DRY_RUN:
-                        log(f"[DRY RUN] Would move {display} from removed to welcomed and send welcome email")
-                    else:
-                        # Send welcome email for rejoined user
-                        if email:
-                            try:
-                                send_email(email, "Access confirmed", welcome_email_html(display))
-                                log(f"[join] welcome sent to rejoined user -> {email}")
-                            except Exception as e:
-                                log(f"[join] welcome email error: {e}")
-                        try:
-                            send_email(ADMIN_EMAIL, "Centauri: User rejoined",
-                                       admin_join_html({"id": uid, "title": display, "email": email}))
-                            log(f"[join] admin notice sent for rejoined user")
-                        except Exception as e:
-                            log(f"[join] admin email error: {e}")
-                        send_discord(f"🔄 User rejoined Plex: {display} ({email or 'no email'}) - previously removed")
-                        
-                        # Move from removed to welcomed
-                        del removed[uid]
-                    
-                    welcomed[uid] = now.isoformat()
-                    rejoined_count += 1
-                    continue
-                
+            for u in friends:
+                uid = str(u.id)
                 if uid in welcomed:
                     continue
-                # New user detected (not yet welcomed)
-                log(f"[join] NEW: {display} ({email or 'no email'}) id={uid}")
-                
-                if DRY_RUN:
-                    log(f"[DRY RUN] Would send welcome email to {display} ({email or 'no email'})")
-                else:
-                    if email:
+                created = None
+                try:
+                    if getattr(u, "createdAt", None):
+                        created = u.createdAt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    pass
+                if created and (now - created) < timedelta(days=2):
+                    display = u.title or u.username or "there"
+                    log(f"[join] NEW: {display} ({u.email or 'no email'}) id={uid}")
+                    if u.email:
                         try:
-                            send_email(email, "Access confirmed", welcome_email_html(display))
-                            log(f"[join] welcome sent -> {email}")
+                            send_email(u.email, "Access confirmed", welcome_email_html(display))
+                            log(f"[join] welcome sent -> {u.email}")
                         except Exception as e:
                             log(f"[join] welcome email error: {e}")
                     try:
                         send_email(ADMIN_EMAIL, "Centauri: New member onboarded",
-                                   admin_join_html({"id": uid, "title": display, "email": email}))
+                                   admin_join_html({"id": uid, "title": display, "email": u.email}))
                         log(f"[join] admin notice sent")
                     except Exception as e:
                         log(f"[join] admin email error: {e}")
-                    send_discord(f"👤 New Plex user joined: {display} ({email or 'no email'})")
-                
-                welcomed[uid] = now.isoformat()
-                new_count += 1
-            if new_count == 0 and rejoined_count == 0:
+                    send_discord(f"👤 New Plex user joined: {display} ({u.email or 'no email'})")
+                    welcomed[uid] = now.isoformat()
+                    new_count += 1
+            if new_count == 0:
                 log("[join] no new users")
-            elif rejoined_count > 0:
-                log(f"[join] {rejoined_count} user(s) rejoined, {new_count} new user(s)")
             state["welcomed"] = welcomed
-            state["removed"] = removed
             save_state(state)
         except Exception as e:
             log(f"[join] error: {e}")
@@ -990,7 +924,8 @@ def slow_inactivity_watcher():
     warned = state.get("warned", {})
     removed = state.get("removed", {})
     welcomed = state.get("welcomed", {})  # Track when users joined
-    server = get_plex_server_resource(get_plex_account())
+    acct = get_plex_account()
+    server = get_plex_server_resource(acct)
     tick = 0
 
     while not stop_event.is_set():
@@ -1002,7 +937,7 @@ def slow_inactivity_watcher():
             plex_users = None
             for attempt in range(3):
                 try:
-                    plex_users = plex_get_users()
+                    plex_users = acct.users()
                     break
                 except Exception as e:
                     if attempt < 2:
@@ -1015,8 +950,8 @@ def slow_inactivity_watcher():
                 log("[inactive] Could not fetch users after 3 attempts, skipping this tick")
                 continue
                 
-            plex_by_email = {(u["email"] or "").lower(): u for u in plex_users}
-            plex_by_username = {(u["username"] or "").lower(): u for u in plex_users}
+            plex_by_email = {(u.email or "").lower(): u for u in plex_users}
+            plex_by_username = {(u.username or "").lower(): u for u in plex_users}
 
             # Retry logic for Tautulli API calls
             t_users = None
@@ -1036,6 +971,25 @@ def slow_inactivity_watcher():
                 continue
             now = datetime.now(timezone.utc)
             acted = False
+            
+            # Clean up removed users that are still present (failed removals or re-added users)
+            # This allows them to be processed again
+            users_to_unmark = []
+            for removed_uid in list(removed.keys()):
+                # Check if this "removed" user is still in Plex
+                for pu in plex_users:
+                    if str(pu.id) == removed_uid:
+                        removal_info = removed[removed_uid]
+                        log(f"[inactive] User {pu.title or pu.username} (ID: {removed_uid}) marked as removed but still present in Plex!")
+                        log(f"[inactive] Previous removal: {removal_info.get('when')}, ok={removal_info.get('ok')}")
+                        log(f"[inactive] Unmarking for re-processing...")
+                        users_to_unmark.append(removed_uid)
+                        break
+            
+            # Remove them from the removed dict so they can be processed again
+            for uid_to_unmark in users_to_unmark:
+                del removed[uid_to_unmark]
+                acted = True
 
             for tu in t_users:
                 tid   = tu.get("user_id")
@@ -1045,10 +999,10 @@ def slow_inactivity_watcher():
                 pu = plex_by_email.get(temail) or plex_by_username.get(tuser)
                 if not pu:
                     continue
-                uid = str(pu["id"])
-                display = pu["title"] or pu["username"] or "there"
-                email = pu["email"]
-                username = (pu["username"] or "").lower()
+                uid = str(pu.id)
+                display = pu.title or pu.username or "there"
+                email = pu.email
+                username = (pu.username or "").lower()
 
                 # Check VIP protection (email or username)
                 if (email or "").lower() in VIP_EMAILS or username in VIP_NAMES:
@@ -1076,72 +1030,83 @@ def slow_inactivity_watcher():
                         last_watch = join_date + timedelta(hours=24)
                     except Exception:
                         pass
-                if last_watch is None and pu.get("createdAt"):
+                # For existing users (not in welcomed dict), use createdAt + 24h to be fair
+                if last_watch is None and getattr(pu, "createdAt", None):
                     try:
-                        created_at = datetime.fromisoformat(pu["createdAt"])
-                        last_watch = created_at.replace(tzinfo=timezone.utc)
+                        created_at = pu.createdAt.replace(tzinfo=timezone.utc)
+                        # Add 24 hours to give existing users the same grace period
+                        last_watch = created_at + timedelta(hours=24)
                     except Exception:
                         pass
 
-                days = KICK_DAYS if last_watch is None else (now - last_watch).days
+                # If we still can't determine when they joined, skip them (don't assume they're inactive)
+                if last_watch is None:
+                    log(f"[inactive] {display}: SKIPPING - cannot determine join date or last watch time")
+                    continue
+                
+                days = (now - last_watch).days
                 log(f"[inactive] {display}: last={last_watch}, days={days}")
 
                 if days >= WARN_DAYS and days < KICK_DAYS and uid not in warned:
-                    if DRY_RUN:
-                        log(f"[DRY RUN] Would warn {display} ({email or 'no email'}) - {days} days inactive")
-                    else:
-                        if email:
-                            try:
-                                send_email(email, "Inactivity notice", warn_email_html(display, days))
-                                log(f"[inactive] warn sent -> {email}")
-                            except Exception as e:
-                                log(f"[inactive] warn email error: {e}")
+                    if email:
                         try:
-                            send_email(ADMIN_EMAIL, f"Centauri: Warning sent to {display}",
-                                       f"<p>Warned ~{days}d inactive: {display} ({email or 'no-email'})</p>")
-                            log("[inactive] admin warn notice sent")
+                            send_email(email, "Inactivity notice", warn_email_html(display, days))
+                            log(f"[inactive] warn sent -> {email}")
                         except Exception as e:
-                            log(f"[inactive] admin warn email error: {e}")
-                        send_discord(f"⚠️ Warned {display} (~{days}d inactive)")
+                            log(f"[inactive] warn email error: {e}")
+                    try:
+                        send_email(ADMIN_EMAIL, f"Centauri: Warning sent to {display}",
+                                   f"<p>Warned ~{days}d inactive: {display} ({email or 'no-email'})</p>")
+                        log("[inactive] admin warn notice sent")
+                    except Exception as e:
+                        log(f"[inactive] admin warn email error: {e}")
+                    send_discord(f"⚠️ Warned {display} (~{days}d inactive)")
                     warned[uid] = now.isoformat()
                     acted = True
 
                 if days >= KICK_DAYS and uid not in removed:
                     reason = f"Inactivity for {days} days (threshold {KICK_DAYS})"
-                    
+
                     if DRY_RUN:
-                        log(f"[DRY RUN] Would remove {display} ({email or 'no email'}) - {reason}")
-                        ok = False  # Simulated failure in dry run
+                        log(f"[inactive] DRY_RUN: Would remove {display} ({email or 'no-email'}) - {reason}")
+                        ok = True  # Simulate success in dry run
+                        tautulli_deleted = True  # Simulate success in dry run
                     else:
-                        ok = remove_friend(get_plex_account(), uid)
+                        # Pass the MyPlexUser object to remove_friend
+                        ok = remove_friend(acct, pu)
                         
+                        # If Plex removal succeeded, also delete from Tautulli database
+                        tautulli_deleted = False
                         if ok:
-                            # Removal succeeded - notify user and admin
-                            if email:
-                                try:
-                                    send_email(email, "Access revoked", removal_email_html(display))
-                                    log(f"[inactive] removal notice sent -> {email}")
-                                except Exception as e:
-                                    log(f"[inactive] removal email error: {e}")
-                            try:
-                                send_email(ADMIN_EMAIL, f"Centauri: User removal SUCCESS",
-                                           admin_removed_html({"id":uid,"title":display,"email":email}, reason, "SUCCESS"))
-                                log("[inactive] admin removal SUCCESS notice sent")
-                            except Exception as e:
-                                log(f"[inactive] admin removal email error: {e}")
-                            send_discord(f"🗑️ Removal ✅ {display} :: {reason}")
-                        else:
-                            # Removal failed - only notify admin, don't email the user
-                            log(f"[inactive] removal FAILED for {display} - user NOT notified")
-                            try:
-                                send_email(ADMIN_EMAIL, f"Centauri: User removal FAILED",
-                                           admin_removed_html({"id":uid,"title":display,"email":email}, reason, "FAILED"))
-                                log("[inactive] admin removal FAILED notice sent")
-                            except Exception as e:
-                                log(f"[inactive] admin removal email error: {e}")
-                            send_discord(f"🗑️ Removal ❌ {display} :: {reason}")
+                            tautulli_deleted = tautulli_delete_user(tid)
+                            if not tautulli_deleted:
+                                log(f"[inactive] ⚠️ User removed from Plex but Tautulli deletion failed for {display}")
+
+                    # Only send removal email to user if removal succeeded (and not in dry run)
+                    if ok and email and not DRY_RUN:
+                        try:
+                            send_email(email, "Access revoked", removal_email_html(display))
+                            log(f"[inactive] removal notice sent -> {email}")
+                        except Exception as e:
+                            log(f"[inactive] removal email error: {e}")
+                    elif not ok:
+                        log(f"[inactive] skipping user email - removal failed for {display}")
+
+                    # Always notify admin of attempt (success or failure)
+                    if not DRY_RUN:
+                        try:
+                            send_email(ADMIN_EMAIL, f"Centauri: User removal {'SUCCESS' if ok else 'FAILED'}",
+                                       admin_removed_html({"id":uid,"title":display,"email":email}, reason,
+                                                          "SUCCESS" if ok else "FAILED"))
+                            log("[inactive] admin removal notice sent")
+                        except Exception as e:
+                            log(f"[inactive] admin removal email error: {e}")
                     
-                    removed[uid] = {"when": now.isoformat(), "ok": ok, "reason": reason}
+                    # Include Tautulli deletion status in Discord notification
+                    status_emoji = '✅' if ok else '❌'
+                    tautulli_status = ' (+ Tautulli DB)' if (ok and tautulli_deleted) else (' (Tautulli DB failed)' if ok else '')
+                    send_discord(f"{'[DRY_RUN] ' if DRY_RUN else ''}🗑️ Removal {status_emoji} {display}{tautulli_status} :: {reason}")
+                    removed[uid] = {"when": now.isoformat(), "ok": ok, "reason": reason, "tautulli_deleted": tautulli_deleted}
                     acted = True
 
             state["warned"] = warned
@@ -1167,12 +1132,11 @@ if __name__ == "__main__":
         sys.exit(0)
     
     log("Centauri Guardian daemon started.")
-    log(f"[config] DRY_RUN mode: {'ENABLED' if DRY_RUN else 'DISABLED'}")
     if DRY_RUN:
-        log("[config] ⚠️ DRY_RUN is ON - No emails will be sent, no users will be removed")
+        log("⚠️  DRY_RUN MODE ENABLED - No users will be removed, no emails will be sent ⚠️")
     else:
-        log("[config] ⚡ LIVE MODE - Emails will be sent and users will be removed")
-    
+        log("✅ LIVE MODE - User removals and emails will be sent")
+    log(f"VIP protection: {len(VIP_EMAILS)} email(s) + {len(VIP_NAMES)} username(s)")
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
     t1 = threading.Thread(target=fast_join_watcher, daemon=True)

@@ -2,16 +2,33 @@
 
 A Docker container that automatically manages Plex user access based on activity levels. Perfect for TrueNAS Scale deployment.
 
+## Recent Updates (v2.0)
+
+### Major Improvements
+- ✅ **Switched to Official PlexAPI Library**: Now uses the official `plexapi` library for all Plex operations
+- ✅ **Fixed Removal Issues**: Updated to Plex API v2 endpoints (fixes deprecated `/api/friends` endpoint)
+- ✅ **Tautulli Database Cleanup**: Automatically removes users from Tautulli database when removed from Plex
+- ✅ **Improved Error Handling**: Better logging and diagnostics for troubleshooting
+- ✅ **Smart Re-processing**: Automatically detects failed removals and retries
+- ✅ **Test Utilities**: Added `test_plex_api.py` for pre-flight verification
+- ✅ **Enhanced Documentation**: New `API_VERIFICATION.md` explains how everything works
+
+### Breaking Changes
+- ⚠️ **No .env File Loading**: Container now uses only environment variables (proper Docker pattern)
+- ⚠️ **Requires plexapi 4.15.0+**: Earlier versions use deprecated endpoints
+
 ## Features
 
 - **Automatic User Onboarding**: Sends welcome emails to new Plex users
 - **Inactivity Monitoring**: Tracks user viewing activity via Tautulli
 - **Graduated Warnings**: Sends warning emails before removing inactive users
+- **Automatic Cleanup**: Removes users from both Plex AND Tautulli database
 - **Email Notifications**: Beautiful HTML emails with Centauri branding
 - **Discord Integration**: Optional webhook notifications
 - **Admin Alerts**: Detailed admin notifications for all actions
 - **VIP Protection**: Protect friends and family by email or username
 - **Dry Run Mode**: Test configuration without making changes
+- **Smart Recovery**: Automatically re-processes failed removals
 
 ## TrueNAS Scale Deployment
 
@@ -24,12 +41,69 @@ A Docker container that automatically manages Plex user access based on activity
 
 ### Required Files
 
-Only these files are needed for deployment:
+Deployment files:
 - `Dockerfile` - Container build instructions
 - `main.py` - Application code
-- `requirements.txt` - Python dependencies
-- `.dockerignore` - Build optimization
+- `portainer-stack.yml` - TrueNAS/Portainer deployment config
+
+Documentation:
 - `README.md` - This documentation
+- `API_VERIFICATION.md` - Plex API verification guide
+- `test_plex_api.py` - Pre-flight connectivity test
+
+Development:
+- `requirements.txt` - Python dependencies (for reference)
+- `docker-compose.yml` - Local development setup
+- `.dockerignore` - Build optimization
+
+### Testing Before Deployment
+
+**NEW: Pre-flight API Test**
+
+Before deploying, you can verify Plex connectivity:
+
+```bash
+# Install dependencies
+pip install plexapi requests python-dateutil
+
+# Run the test script
+python test_plex_api.py
+```
+
+This will:
+- ✅ Verify plexapi library works
+- ✅ Test Plex token authentication
+- ✅ List all current users
+- ✅ Confirm `removeFriend` method exists
+- ✅ Check server access
+
+**No users will be removed** - it's read-only testing.
+
+## How Inactivity Tracking Works
+
+### New Users (Detected by Daemon)
+When a new user joins while the daemon is running:
+1. User is added to the `welcomed` tracking within 2 days of joining
+2. **24-hour grace period**: No inactivity checks for first 24 hours
+3. **Activity baseline**: If user never watches anything, baseline = `join_date + 24 hours`
+4. **Timeline example**:
+   - Day 0: User joins Plex
+   - Day 0-1: Grace period (no tracking)
+   - Day 27-28: Warning email sent (if no activity since Day 1)
+   - Day 30-31: User removed (if still no activity)
+
+### Existing Users (Added Before Daemon Started)
+For users who were already on your Plex when you deploy the daemon:
+1. No grace period needed (they're existing users)
+2. **Activity baseline**: If user has Tautulli watch history, that's used
+3. **No watch history**: Baseline = `Plex createdAt + 24 hours`
+4. **Protection**: If we can't determine join date → user is skipped (not removed)
+
+### Important Notes
+- ✅ **Watch history always wins**: If Tautulli has watch data, that's the primary source
+- ✅ **Fair to existing users**: Both new and existing users get the `+24h` grace in baseline calculation
+- ✅ **Safety first**: Users with unknown join dates are skipped, not assumed inactive
+- ✅ **VIP protection**: VIP users (by email or username) are never removed regardless of activity
 
 ### Environment Variables
 
@@ -123,15 +197,36 @@ VIP_NAMES=friend1,family_member,bestfriend
 
 ## Building the Container
 
-If building locally for TrueNAS Scale:
+### For TrueNAS Scale (Portainer)
 
+**Option 1: Build from GitHub (Recommended)**
+```yaml
+# In portainer-stack.yml
+build:
+  context: https://github.com/InfamousMorningstar/Plex-Auto-Prune.git#main
+  dockerfile: Dockerfile
+```
+
+**Option 2: Build Locally**
 ```bash
+# Clone the repository
+git clone https://github.com/InfamousMorningstar/Plex-Auto-Prune.git
+cd Plex-Auto-Prune
+
 # Build the image
 docker build -t plex-autoprune-daemon .
 
 # Save for transfer (if needed)
 docker save plex-autoprune-daemon > plex-autoprune-daemon.tar
 ```
+
+### Dependencies
+The Dockerfile automatically installs:
+- `plexapi>=4.15.0` - Official Plex API library (includes v2 endpoint fix)
+- `requests>=2.31.0` - HTTP library
+- `python-dateutil>=2.8.2` - Date parsing
+
+**Important:** Version 4.15.0+ of plexapi is required for proper user removal (fixes deprecated `/api/friends` endpoint).
 
 ## VIP Protection
 
@@ -148,26 +243,132 @@ VIP_NAMES=mom,dad,brother,sister,bestfriend
 
 ## Production Deployment
 
-1. **Set Production Mode** in environment variables:
+### Step 1: Test First (Recommended)
+
+1. **Set Dry Run Mode** in environment variables:
+   ```
+   DRY_RUN=true
+   ```
+
+2. **Deploy and Monitor**:
+   - Deploy to TrueNAS Scale using Portainer
+   - Monitor logs: Apps → plex-autoprune-daemon → Logs
+   - Verify users are detected correctly
+   - Check that removals would work (logged but not executed)
+
+3. **Run API Test** (optional):
+   ```bash
+   # SSH into TrueNAS or container
+   python3 test_plex_api.py
+   ```
+
+### Step 2: Go Live
+
+1. **Set Production Mode**:
    ```
    DRY_RUN=false
    ```
 
-2. **Monitor via TrueNAS Scale Logs**
-   - Go to Apps → plex-autoprune-daemon → Logs
-   - Monitor for successful operations
+2. **Redeploy**:
+   - Update environment variable in Portainer
+   - Restart the stack
+
+3. **Monitor Operations**:
+   - Check container logs regularly
+   - Verify admin emails are received
+   - Monitor Discord notifications (if configured)
+   - Check state file: `/app/state/state.json`
+
+### What Gets Removed
+
+When a user is removed for inactivity:
+- ✅ **Removed from Plex** - Access revoked via PlexAPI
+- ✅ **Removed from Tautulli** - User data deleted from database
+- ✅ **State tracking updated** - Marked in `state.json`
+- ✅ **Notifications sent** - Admin email + Discord (if configured)
+- ✅ **User emailed** - Removal notice (if email available)
+
+### Monitoring & Logs
+
+**Successful Removal:**
+```
+[remove_friend] Attempting to remove user: JohnDoe (john@example.com) (ID: 123456)
+[remove_friend] Successfully removed user: JohnDoe (john@example.com) (ID: 123456)
+[tautulli] ✅ Successfully deleted user_id 123456 from Tautulli
+[inactive] removal notice sent -> john@example.com
+🗑️ Removal ✅ JohnDoe (+ Tautulli DB) :: Inactivity for 30 days
+```
+
+**Failed Removal:**
+```
+[remove_friend] ❌ Exception removing user JohnDoe: [error details]
+[inactive] skipping user email - removal failed for JohnDoe
+🗑️ Removal ❌ JohnDoe :: Inactivity for 30 days
+```
+
+### Troubleshooting
+
+**Users not being removed?**
+1. Check `DRY_RUN=false` is set
+2. Verify Plex token has admin permissions
+3. Check container logs for errors
+4. Run `test_plex_api.py` to verify connectivity
+5. See `API_VERIFICATION.md` for detailed diagnostics
+
+**Removals fail but container is working?**
+1. Check plexapi version: `docker exec plex-autoprune-daemon pip show plexapi`
+2. Ensure version is 4.15.0 or higher
+3. Token might not have removal permissions
+4. Users might be "Home Users" instead of "Friends" (different API)
+
+**Tautulli deletion fails?**
+1. Verify `TAUTULLI_API_KEY` is correct
+2. Check Tautulli API permissions
+3. Ensure network connectivity to Tautulli
 
 ## File Structure
 
-Essential files for TrueNAS Scale deployment:
 ```
 guardian/
-├── Dockerfile          # Container build instructions
-├── main.py             # Application code  
-├── requirements.txt    # Python dependencies
-├── .dockerignore      # Build optimization
-└── README.md          # This documentation
+├── Dockerfile              # Container build instructions
+├── main.py                 # Application code (1100+ lines)
+├── requirements.txt        # Python dependencies
+├── docker-compose.yml      # Local development setup
+├── portainer-stack.yml     # TrueNAS/Portainer deployment
+├── .dockerignore          # Build optimization
+├── README.md              # Main documentation
+├── API_VERIFICATION.md    # Plex API verification guide
+├── test_plex_api.py       # Pre-flight connectivity test
+└── state/
+    └── state.json         # Runtime state (auto-generated)
 ```
+
+## Additional Resources
+
+- **API Verification Guide**: See `API_VERIFICATION.md` for detailed information about:
+  - How the Plex API integration works
+  - Why `removeFriend()` is the correct method
+  - Verification and testing procedures
+  - Troubleshooting removal issues
+
+- **GitHub Repository**: https://github.com/InfamousMorningstar/Plex-Auto-Prune
+
+## Changelog
+
+### v2.0 (November 2025)
+- **Breaking:** Switched to official plexapi library for all Plex operations
+- **Breaking:** Removed .env file loading (use environment variables only)
+- **Added:** Automatic Tautulli database cleanup on user removal
+- **Added:** Smart re-processing of failed removals
+- **Added:** Pre-flight API test script (`test_plex_api.py`)
+- **Added:** Comprehensive API verification documentation
+- **Fixed:** User removal using deprecated Plex API endpoints
+- **Fixed:** Better error handling and logging
+- **Improved:** DRY_RUN mode now simulates success instead of failure
+
+### v1.0 (October 2025)
+- Initial release with manual API calls
+- Basic user management functionality
 
 ## Support
 

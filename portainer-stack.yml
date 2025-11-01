@@ -20,7 +20,6 @@ services:
       SMTP_FROM: ${SMTP_FROM}
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       DISCORD_WEBHOOK: ${DISCORD_WEBHOOK}
-      LINK_DISCORD: ${LINK_DISCORD}
       WARN_DAYS: ${WARN_DAYS:-27}
       KICK_DAYS: ${KICK_DAYS:-30}
       CHECK_NEW_USERS_SECS: ${CHECK_NEW_USERS_SECS:-120}
@@ -30,4 +29,3 @@ services:
     
     volumes:
       - /mnt/app-pool/config/autoprune/state:/app/state
-      - /mnt/app-pool/config/autoprune/.env:/app/.env:ro
