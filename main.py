@@ -1333,65 +1333,75 @@ def fast_join_watcher():
                     log(f"[join] Could not verify departed users (API error), skipping cleanup: {e}")
                     # Don't remove anyone if verification fails
             
+            # Check if this is the first scan (welcomed dict is empty or very small)
+            # On first scan, all users are existing - add them silently without emails
+            is_first_scan = len(welcomed) == 0 or (len(welcomed) < 3 and tick == 1)
+            
             new_count = 0
             for u in friends:
                 uid = str(u.id)
                 if uid in welcomed:
                     continue
                 
-                # User not in welcomed dict - they're new to our tracking
-                # Check if they actually joined recently (within 7 days) to avoid welcoming very old users
-                created = None
-                try:
-                    if getattr(u, "createdAt", None):
-                        created = u.createdAt.replace(tzinfo=timezone.utc)
-                except Exception:
-                    pass
+                display = u.title or u.username or "there"
+                user_email = (u.email or "").lower()
                 
-                # Welcome users who joined within the last 7 days
-                # Only send welcome emails if we can VERIFY they're actually new (have createdAt date)
-                # Users without createdAt are treated as existing users (no welcome email)
-                should_welcome = False
-                if created:
-                    days_since_join = (now - created).days
-                    if days_since_join < 7:
-                        should_welcome = True
-                        log(f"[join] NEW: {u.title or u.username} ({u.email or 'no email'}) id={uid} (joined {days_since_join}d ago)")
-                    else:
-                        # User exists but joined more than 7 days ago - just track them silently
-                        log(f"[join] EXISTING (silent track): {u.title or u.username} (joined {days_since_join}d ago)")
-                        welcomed[uid] = created.isoformat()  # Use their actual join date
-                        new_count += 1
-                else:
-                    # Can't determine when they joined from Plex API (createdAt is None)
-                    # Assume they're EXISTING users (were in Plex before daemon started)
-                    # Track them silently WITHOUT welcome email to avoid spamming existing users
-                    display = u.title or u.username or "there"
-                    log(f"[join] EXISTING (unknown join date, silent track): {display} ({u.email or 'no email'}) id={uid} - tracking from now")
-                    # Use current time as their join date for tracking purposes
-                    welcomed[uid] = now.isoformat()
-                    new_count += 1
-                    should_welcome = False  # DO NOT send welcome email to users with unknown join dates
+                # Check if user is VIP (skip welcome emails for VIPs)
+                is_vip = False
+                if user_email in VIP_EMAILS:
+                    is_vip = True
+                elif display.lower() in VIP_NAMES:
+                    is_vip = True
                 
-                if should_welcome:
-                    display = u.title or u.username or "there"
-                    log_info(f"[join] Sending welcome email to {display} ({u.email or 'no email'})")
-                    if u.email:
-                        try:
-                            send_email(u.email, "Access confirmed", welcome_email_html(display))
-                            log(f"[join] welcome sent -> {u.email}")
-                        except Exception as e:
-                            log_error(f"[join] welcome email error: {e}")
+                # First scan: All users are existing users - add them silently (no emails)
+                if is_first_scan:
+                    # Use Plex createdAt if available, otherwise use current time as join date
+                    created = None
                     try:
-                        send_email(ADMIN_EMAIL, "Centauri: New member onboarded",
-                                   admin_join_html({"id": uid, "title": display, "email": u.email}))
-                        log(f"[join] admin notice sent")
-                    except Exception as e:
-                        log_error(f"[join] admin email error: {e}")
-                    send_discord(f"👤 New Plex user joined: {display} ({u.email or 'no email'})")
-                    welcomed[uid] = now.isoformat()
+                        if getattr(u, "createdAt", None):
+                            created = u.createdAt.replace(tzinfo=timezone.utc)
+                    except Exception:
+                        pass
+                    join_date = created if created else now
+                    
+                    log(f"[join] EXISTING (first scan, silent track): {display} ({u.email or 'no email'}) id={uid} - join date: {join_date.isoformat()}")
+                    welcomed[uid] = join_date.isoformat()
                     new_count += 1
-                    metrics["users_welcomed"] += 1
+                    continue
+                
+                # After first scan: User not in welcomed = truly new user
+                # Use detection timestamp (now) as their join date
+                join_date = now
+                
+                # Skip VIP users (don't send welcome emails)
+                if is_vip:
+                    log(f"[join] NEW (VIP, skip email): {display} ({u.email or 'no email'}) id={uid} - join date: {now.isoformat()}")
+                    welcomed[uid] = join_date.isoformat()
+                    new_count += 1
+                    continue
+                
+                # New user detected - send welcome email
+                log_info(f"[join] NEW: {display} ({u.email or 'no email'}) id={uid} - join date: {now.isoformat()} (detected now)")
+                log_info(f"[join] Sending welcome email to {display} ({u.email or 'no email'})")
+                
+                if u.email:
+                    try:
+                        send_email(u.email, "Access confirmed", welcome_email_html(display))
+                        log(f"[join] welcome sent -> {u.email}")
+                    except Exception as e:
+                        log_error(f"[join] welcome email error: {e}")
+                
+                try:
+                    send_email(ADMIN_EMAIL, "Centauri: New member onboarded",
+                               admin_join_html({"id": uid, "title": display, "email": u.email}))
+                    log(f"[join] admin notice sent")
+                except Exception as e:
+                    log_error(f"[join] admin email error: {e}")
+                
+                send_discord(f"👤 New Plex user joined: {display} ({u.email or 'no email'})")
+                welcomed[uid] = join_date.isoformat()
+                new_count += 1
+                metrics["users_welcomed"] += 1
             if new_count == 0:
                 log("[join] no new users")
             
