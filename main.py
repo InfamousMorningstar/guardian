@@ -204,17 +204,47 @@ def remove_friend(acct, plex_user):
 
         log(f"[remove_friend] Attempting to remove user: {user_id}")
         log(f"[remove_friend] User object type: {type(plex_user)}")
-        log(f"[remove_friend] Account type: {type(acct)}")
+        
+        # Check if user is a friend or has shared server access
+        is_friend = hasattr(plex_user, 'friend') and plex_user.friend
+        log(f"[remove_friend] Is friend: {is_friend}, Has servers: {len(getattr(plex_user, 'servers', []))}")
 
-        # Use the plexapi library's built-in removeFriend method
-        # This handles all the API calls internally and properly
-        acct.removeFriend(plex_user)
-
-        log(f"[remove_friend] Successfully removed user: {user_id}")
-        return True
+        # Method 1: Try removeFriend first (for actual friends)
+        try:
+            acct.removeFriend(plex_user)
+            log(f"[remove_friend] ✅ Successfully removed friend: {user_id}")
+            return True
+        except Exception as e1:
+            log(f"[remove_friend] removeFriend failed: {e1}, trying server unshare...")
+            
+            # Method 2: Unshare all servers from this user (for shared access users)
+            try:
+                # Get all servers and unshare from this user
+                servers_removed = 0
+                for resource in acct.resources():
+                    if hasattr(resource, 'provides') and resource.provides == 'server':
+                        try:
+                            # Use the MyPlexUser.removeAccess() method
+                            plex_user.removeAccess(resource)
+                            servers_removed += 1
+                            log(f"[remove_friend] Unshared server '{resource.name}' from {user_id}")
+                        except Exception as e2:
+                            log(f"[remove_friend] Failed to unshare '{resource.name}': {e2}")
+                
+                if servers_removed > 0:
+                    log(f"[remove_friend] ✅ Successfully unshared {servers_removed} server(s) from {user_id}")
+                    return True
+                else:
+                    log(f"[remove_friend] ❌ No servers to unshare from {user_id}")
+                    return False
+                    
+            except Exception as e2:
+                log(f"[remove_friend] ❌ Server unshare failed: {e2}")
+                traceback.print_exc()
+                return False
 
     except Exception as e:
-        log(f"[remove_friend] ❌ Exception removing user {user_id}: {e}")
+        log(f"[remove_friend] ❌ Fatal exception removing user {user_id}: {e}")
         log(f"[remove_friend] Exception type: {type(e).__name__}")
         traceback.print_exc()
         return False
