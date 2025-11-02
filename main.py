@@ -243,8 +243,8 @@ def test_discord_notifications():
     
     # Test 1: User Join
     join_msg = (
-        "✅ **New User Joined**\n"
-        "**Test User** (test@example.com)\n"
+        "✅ New User Joined\n\n"
+        "Test User (test@example.com)\n"
         "ID: 99999999"
     )
     send_discord(join_msg)
@@ -253,8 +253,8 @@ def test_discord_notifications():
     
     # Test 2: Warning
     warning_msg = (
-        "⚠️ **Inactivity Warning Sent**\n"
-        "**Test User** (test@example.com)\n"
+        "⚠️ Inactivity Warning Sent\n\n"
+        "Test User (test@example.com)\n"
         "Inactive for: 27 days\n"
         "Days until removal: 3"
     )
@@ -264,8 +264,8 @@ def test_discord_notifications():
     
     # Test 3: Removal
     removal_msg = (
-        "🚫 **User Removed**\n"
-        "**Test User** (test@example.com)\n"
+        "🚫 User Removed\n\n"
+        "Test User (test@example.com)\n"
         "Reason: Inactivity for 30 days"
     )
     send_discord(removal_msg)
@@ -393,6 +393,8 @@ def save_state(state, backup=True):
 
 def send_email(to_addr, subject, html_body, retry=True):
     """Send email with retry support and rate limiting"""
+    global last_email_time, email_send_times
+    
     if not validate_email(to_addr):
         log_error(f"[email] Invalid email address: {to_addr}")
         metrics["emails_failed"] += 1
@@ -1398,7 +1400,11 @@ def fast_join_watcher():
                 except Exception as e:
                     log_error(f"[join] admin email error: {e}")
                 
-                send_discord(f"👤 New Plex user joined: {display} ({u.email or 'no email'})")
+                send_discord(
+                    f"✅ New User Joined\n\n"
+                    f"{display} ({u.email or 'no email'})\n"
+                    f"ID: {uid}"
+                )
                 welcomed[uid] = join_date.isoformat()
                 new_count += 1
                 metrics["users_welcomed"] += 1
@@ -1611,8 +1617,8 @@ def slow_inactivity_watcher():
                         join_date = datetime.fromisoformat(welcomed[uid])
                         hours_since_join = (now - join_date).total_seconds() / 3600
                         
-                        # If user has a very recent join date (< 24 hours) but has createdAt,
-                        # they're likely an existing user who was incorrectly added - fix their date
+                        # If user has a very recent join date (< 24 hours), check if they're actually existing
+                        # Fix their date if they have createdAt or watch history older than their welcomed date
                         if hours_since_join < 24:
                             # Check if they have createdAt (they existed before being added to welcomed)
                             if getattr(pu, "createdAt", None):
@@ -1623,6 +1629,19 @@ def slow_inactivity_watcher():
                                         welcomed[uid] = created_at.isoformat()
                                         join_date = created_at
                                         log(f"[inactive] {display}: Fixed join date from recent ({hours_since_join:.1f}h ago) to actual createdAt: {created_at.isoformat()}")
+                                except Exception:
+                                    pass
+                            else:
+                                # Check if they have watch history older than their welcomed date
+                                # If so, they're clearly an existing user
+                                try:
+                                    oldest_watch = tautulli_last_watch(tid)
+                                    if oldest_watch and oldest_watch < join_date:
+                                        # Use 6 months ago as default (they're existing, not new)
+                                        default_date = now - timedelta(days=180)
+                                        welcomed[uid] = default_date.isoformat()
+                                        join_date = default_date
+                                        log(f"[inactive] {display}: Fixed join date - has watch history older than welcomed date, using default (6 months ago)")
                                 except Exception:
                                     pass
                         
@@ -1692,7 +1711,13 @@ def slow_inactivity_watcher():
                         log("[inactive] admin warn notice sent")
                     except Exception as e:
                         log(f"[inactive] admin warn email error: {e}")
-                    send_discord(f"⚠️ Warned {display} (~{days}d inactive)")
+                    days_left = KICK_DAYS - days
+                    send_discord(
+                        f"⚠️ Inactivity Warning Sent\n\n"
+                        f"{display} ({email or 'no email'})\n"
+                        f"Inactive for: {days} days\n"
+                        f"Days until removal: {days_left}"
+                    )
                     warned[uid] = now.isoformat()
                     metrics["users_warned"] += 1
                     acted = True
@@ -1735,10 +1760,13 @@ def slow_inactivity_watcher():
                         except Exception as e:
                             log(f"[inactive] admin removal email error: {e}")
                     
-                    # Include Tautulli deletion status in Discord notification
-                    status_emoji = '✅' if ok else '❌'
-                    tautulli_status = ' (+ Tautulli DB)' if (ok and tautulli_deleted) else (' (Tautulli DB failed)' if ok else '')
-                    send_discord(f"{'[DRY_RUN] ' if DRY_RUN else ''}🗑️ Removal {status_emoji} {display}{tautulli_status} :: {reason}")
+                    # Discord notification for removal
+                    removal_reason = f"Inactivity for {days} days"
+                    send_discord(
+                        f"🚫 User Removed\n\n"
+                        f"{display} ({email or 'no email'})\n"
+                        f"Reason: {removal_reason}"
+                    )
                     removed[uid] = {"when": now.isoformat(), "ok": ok, "reason": reason, "tautulli_deleted": tautulli_deleted}
                     if ok:
                         metrics["users_removed"] += 1
