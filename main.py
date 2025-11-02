@@ -184,8 +184,14 @@ stop_event = threading.Event()
 email_retry_queue = []
 email_queue_lock = threading.Lock()
 
+# Email rate limiting
+email_rate_lock = threading.Lock()
+last_email_time = 0
+EMAIL_DELAY_SECONDS = 2  # Minimum seconds between emails
+MAX_EMAILS_PER_MINUTE = 10  # Gmail limit is ~100/hour, but be conservative
+email_send_times = []  # Track send times for rate limiting
+
 from plexapi.myplex import MyPlexAccount
-import time
 
 def get_plex_account():
     token = os.environ.get("PLEX_TOKEN")
@@ -386,11 +392,39 @@ def save_state(state, backup=True):
 # ============================================================================
 
 def send_email(to_addr, subject, html_body, retry=True):
-    """Send email with retry support"""
+    """Send email with retry support and rate limiting"""
     if not validate_email(to_addr):
         log_error(f"[email] Invalid email address: {to_addr}")
         metrics["emails_failed"] += 1
         return False
+    
+    # Rate limiting: Check if we're sending too fast
+    with email_rate_lock:
+        now = time.time()
+        
+        # Clean up send times older than 1 minute
+        email_send_times[:] = [t for t in email_send_times if now - t < 60]
+        
+        # Check rate limit (max emails per minute)
+        if len(email_send_times) >= MAX_EMAILS_PER_MINUTE:
+            wait_time = 60 - (now - email_send_times[0])
+            if wait_time > 0:
+                log_debug(f"[email] Rate limit reached ({MAX_EMAILS_PER_MINUTE}/min), waiting {wait_time:.1f}s")
+                time.sleep(wait_time)
+                now = time.time()
+                email_send_times[:] = [t for t in email_send_times if now - t < 60]
+        
+        # Enforce minimum delay between emails
+        time_since_last = now - last_email_time
+        if time_since_last < EMAIL_DELAY_SECONDS:
+            wait_time = EMAIL_DELAY_SECONDS - time_since_last
+            log_debug(f"[email] Rate limiting: waiting {wait_time:.1f}s before next email")
+            time.sleep(wait_time)
+            now = time.time()
+        
+        # Update tracking
+        last_email_time = now
+        email_send_times.append(now)
     
     try:
         msg = MIMEText(html_body, "html")
@@ -402,16 +436,29 @@ def send_email(to_addr, subject, html_body, retry=True):
             msg["From"] = formataddr(("Centauri Guardian", SMTP_FROM))
         msg["To"] = to_addr
         
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
-            s.starttls()
-            s.login(SMTP_USERNAME, SMTP_PASSWORD)
-            # Use extracted email for sendmail (SMTP server needs just the email)
-            from_email = SMTP_FROM_EMAIL if 'SMTP_FROM_EMAIL' in globals() else extract_email(SMTP_FROM)
-            s.sendmail(from_email, [to_addr], msg.as_string())
-        
-        metrics["emails_sent"] += 1
-        log_debug(f"[email] Sent email to {to_addr}: {subject}")
-        return True
+        # Add retry logic for connection issues
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
+                    s.starttls()
+                    s.login(SMTP_USERNAME, SMTP_PASSWORD)
+                    # Use extracted email for sendmail (SMTP server needs just the email)
+                    from_email = SMTP_FROM_EMAIL if 'SMTP_FROM_EMAIL' in globals() else extract_email(SMTP_FROM)
+                    s.sendmail(from_email, [to_addr], msg.as_string())
+                
+                metrics["emails_sent"] += 1
+                log_debug(f"[email] Sent email to {to_addr}: {subject}")
+                return True
+                
+            except (smtplib.SMTPServerDisconnected, smtplib.SMTPException, ConnectionError, OSError) as e:
+                if attempt < max_attempts - 1:
+                    wait_time = (attempt + 1) * 5  # Exponential backoff: 5s, 10s, 15s
+                    log_warn(f"[email] Connection error (attempt {attempt + 1}/{max_attempts}), retrying in {wait_time}s: {e}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise  # Re-raise on final attempt
         
     except Exception as e:
         metrics["emails_failed"] += 1
