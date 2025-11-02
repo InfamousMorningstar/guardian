@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  autoprune:
+    build:
+      context: https://github.com/InfamousMorningstar/guardian.git#main
+      dockerfile: Dockerfile
+    container_name: plex-autoprune-daemon
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      # Python Configuration
+      PYTHONUNBUFFERED: "1"
+      TZ: America/Edmonton  # Change to your timezone (e.g., America/New_York, Europe/London)
+      
+      # Plex Configuration (REQUIRED)
+      PLEX_TOKEN: "YOUR_PLEX_TOKEN_HERE"
+      PLEX_SERVER_NAME: "YOUR_PLEX_SERVER_NAME_HERE"
+      
+      # Tautulli Configuration (REQUIRED)
+      TAUTULLI_URL: "http://YOUR_TAUTULLI_IP:8181"  # Change IP and port if different
+      TAUTULLI_API_KEY: "YOUR_TAUTULLI_API_KEY_HERE"
+      
+      # SMTP Email Configuration (REQUIRED)
+      SMTP_HOST: "smtp.gmail.com"  # Change if using different provider
+      SMTP_PORT: "587"  # 587 for TLS, 465 for SSL
+      SMTP_USERNAME: "your_email@gmail.com"  # Your email address
+      SMTP_PASSWORD: "your_app_password"  # App password (not regular password)
+      SMTP_FROM: "Your Name <your_email@gmail.com>"  # Display name and email
+      ADMIN_EMAIL: "admin@example.com"  # Where to send admin notifications
+      
+      # Discord Configuration (OPTIONAL)
+      DISCORD_WEBHOOK: ""  # Leave empty if not using Discord
+      LINK_DISCORD: ""  # Leave empty if not using Discord
+      
+      # Daemon Behavior Configuration (OPTIONAL - defaults shown)
+      WARN_DAYS: "27"  # Days before warning email
+      KICK_DAYS: "30"  # Days before removal
+      CHECK_NEW_USERS_SECS: "120"  # How often to check for new users (seconds)
+      CHECK_INACTIVITY_SECS: "1800"  # How often to check inactivity (seconds, 1800 = 30 min)
+      DRY_RUN: "true"  # Set to "false" to enable live mode
+      
+      # VIP Protection (OPTIONAL)
+      VIP_NAMES: "mom,dad,brother"  # Comma-separated list of usernames to protect
+      
+      # Health Check (OPTIONAL)
+      HEALTH_CHECK_PORT: "8080"  # Port for health check endpoint
+      
+      # Logging (OPTIONAL)
+      LOG_LEVEL: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    
+    volumes:
+      # State persistence - Change path to match your system
+      - ./state:/app/state
+      # For TrueNAS Scale, use: /mnt/pool/appdata/plex-autoprune/state:/app/state
+

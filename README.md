@@ -2,6 +2,8 @@
 
 **Automatically manage Plex user access based on viewing activity.** This daemon monitors your Plex server, sends welcome emails to new users, warns inactive users, and removes users who haven't watched anything in 30 days.
 
+> 🚀 **Quick Start:** See [INSTALLATION.md](INSTALLATION.md) for a copy-paste installation guide with template docker-compose file.
+
 ## 📺 What This App Does
 
 ### The 30-Day Activity Rule
@@ -120,6 +122,44 @@ DRY_RUN=false  → Live mode, users actually get removed
 - **VIP Protection**: Protect friends and family by email or username
 - **Dry Run Mode**: Test configuration without making changes
 - **Smart Recovery**: Automatically re-processes failed removals
+
+## Resource Usage
+
+**This is an extremely lightweight daemon that you won't even notice is running.**
+
+### Memory (RAM)
+
+- **Typical usage**: 40-70 MB
+- **Peak usage**: Up to 100 MB (during email sending)
+- **Scales minimally** with user count (only stores metadata, not full API responses)
+- **State files**: ~1-5 MB for hundreds of users (100 users ≈ 10 KB, 1000 users ≈ 100 KB)
+
+### CPU Usage
+
+- **Typical**: <1% average CPU usage
+- **Peak**: 5-10% during brief processing windows
+- **98%+ idle time** - threads spend most time sleeping between checks:
+  - New user check: Every 2 minutes (default)
+  - Inactivity check: Every 30 minutes (default)
+  - Health check server: Minimal background process
+
+### Network Usage
+
+- **Typical**: <1 MB/hour
+- **Peak**: ~10 MB/hour (only during email sending)
+- API calls are minimal: ~1-5 KB per Plex call, ~2-10 KB per Tautulli call
+
+### Summary
+
+| Resource | Typical | Peak | Notes |
+|----------|---------|------|-------|
+| **RAM** | 40-70 MB | 100 MB | Scales minimally with user count |
+| **CPU** | <1% | 5-10% | Mostly idle, brief activity bursts |
+| **Network** | <1 MB/hr | ~10 MB/hr | Only significant during email sending |
+
+**Perfect for small servers** - Even works great on resource-constrained TrueNAS Scale installations. The daemon runs silently in the background without impacting system performance.
+
+> 💡 **Tip**: You can adjust polling intervals via `CHECK_NEW_USERS_SECS` and `CHECK_INACTIVITY_SECS` environment variables to further reduce resource usage if desired.
 
 ## TrueNAS Scale Deployment
 

@@ -1,0 +1,19 @@
+{
+  "welcomed": {
+    "user_id_1": "2025-11-01T10:00:00+00:00",
+    "user_id_2": "2025-11-02T15:30:00+00:00"
+  },
+  "warned": {
+    "user_id_3": "2025-11-15T08:00:00+00:00"
+  },
+  "removed": {
+    "user_id_4": {
+      "when": "2025-11-20T12:00:00+00:00",
+      "ok": true,
+      "reason": "Inactivity for 30 days",
+      "tautulli_deleted": true
+    }
+  },
+  "last_inactivity_scan": "2025-11-20T12:00:00+00:00"
+}
+
