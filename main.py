@@ -1254,11 +1254,12 @@ def fast_join_watcher():
                         welcomed[uid] = created.isoformat()  # Use their actual join date
                         new_count += 1
                 else:
-                    # Can't determine when they joined - but they're new to our tracking
-                    # Assume they're new and send welcome email (could be API limitation)
+                    # Can't determine when they joined from Plex API - but they're new to our tracking
+                    # Their join date for our purposes is "now" (when we detect them)
+                    # Since "now" is always within 7 days, they get a welcome email
                     should_welcome = True
                     display = u.title or u.username or "there"
-                    log(f"[join] NEW (unknown join date): {display} ({u.email or 'no email'}) id={uid} - assuming new user")
+                    log(f"[join] NEW: {display} ({u.email or 'no email'}) id={uid} - join date: {now.isoformat()} (detected now)")
                 
                 if should_welcome:
                     display = u.title or u.username or "there"
