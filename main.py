@@ -1464,12 +1464,31 @@ def slow_inactivity_watcher():
                         log_debug(f"[inactive] Matched Tautulli user '{tuser}' to Plex user '{base_username}' (removed .0 suffix)")
                 
                 if not pu:
-                    # Log available Plex users for debugging
+                    # Try one more strategy: Check if this is the owner account
+                    # Plex owner account might not be in friends list - check against owner info
+                    owner_match = False
+                    if owner_username:
+                        # Try exact match or without .0 suffix
+                        owner_match = (tuser == owner_username or 
+                                      (tuser.endswith('.0') and tuser[:-2] == owner_username))
+                    if not owner_match and owner_email:
+                        owner_match = (temail == owner_email)
+                    
+                    if owner_match:
+                        # This is the owner account - skip it (owner can't be removed anyway)
+                        log_debug(f"[inactive] Skipping Tautulli user '{tuser or temail}' (ID: {tid}) - this is the Plex owner account")
+                        continue
+                    
+                    # Log available Plex users for debugging (only if LOG_LEVEL is DEBUG)
                     log_warn(f"[inactive] WARNING: Tautulli user '{tuser or temail}' (ID: {tid}) not found in Plex users")
-                    log_debug(f"[inactive] Tautulli data: username='{tuser}', email='{temail}', id={tid}")
-                    log_debug(f"[inactive] Available Plex usernames: {[u.username for u in plex_users if u.username]}")
-                    log_debug(f"[inactive] Available Plex emails: {[u.email for u in plex_users if u.email]}")
-                    log_debug(f"[inactive] This could mean: email/username changed, user deleted, or data mismatch")
+                    if CURRENT_LOG_LEVEL <= LOG_LEVELS["DEBUG"]:
+                        log_debug(f"[inactive] Tautulli data: username='{tuser}', email='{temail}', id={tid}")
+                        log_debug(f"[inactive] Available Plex usernames: {[u.username for u in plex_users if u.username]}")
+                        log_debug(f"[inactive] Available Plex emails: {[u.email for u in plex_users if u.email]}")
+                        if owner_username:
+                            log_debug(f"[inactive] Plex owner username: {owner_username}")
+                        if owner_email:
+                            log_debug(f"[inactive] Plex owner email: {owner_email}")
                     continue
                 uid = str(pu.id)
                 display = pu.title or pu.username or "there"
