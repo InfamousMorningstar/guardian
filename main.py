@@ -38,6 +38,10 @@ ADMIN_EMAIL      = os.environ["ADMIN_EMAIL"]
 WARN_DAYS        = int(os.environ.get("WARN_DAYS","27"))
 KICK_DAYS        = int(os.environ.get("KICK_DAYS","30"))
 
+# Validate configuration
+if WARN_DAYS >= KICK_DAYS:
+    raise SystemExit(f"Configuration error: WARN_DAYS ({WARN_DAYS}) must be less than KICK_DAYS ({KICK_DAYS})")
+
 CHECK_NEW_USERS_SECS   = int(os.environ.get("CHECK_NEW_USERS_SECS","120"))
 CHECK_INACTIVITY_SECS  = int(os.environ.get("CHECK_INACTIVITY_SECS","1800"))
 
@@ -916,6 +920,7 @@ def fast_join_watcher():
             # Use TWO API calls to verify they're truly gone (prevents false positives from API failures)
             current_user_ids = {str(u.id) for u in friends}
             potentially_departed = [uid for uid in welcomed.keys() if uid not in current_user_ids]
+            departed_count = 0
             
             if potentially_departed:
                 log(f"[join] Found {len(potentially_departed)} potentially departed users, verifying...")
@@ -933,10 +938,11 @@ def fast_join_watcher():
                         log(f"[join] DEPARTED (verified): User {uid} no longer in Plex, removing from tracking")
                         del welcomed[uid]
                     
+                    departed_count = len(confirmed_departed)
                     if confirmed_departed:
                         state["welcomed"] = welcomed
                         save_state(state)
-                        log(f"[join] Cleaned up {len(confirmed_departed)} departed user(s)")
+                        log(f"[join] Cleaned up {departed_count} departed user(s)")
                     else:
                         log(f"[join] False alarm - all {len(potentially_departed)} users still present in Plex")
                         
@@ -991,8 +997,11 @@ def fast_join_watcher():
                     new_count += 1
             if new_count == 0:
                 log("[join] no new users")
-            state["welcomed"] = welcomed
-            save_state(state)
+            
+            # Only save state if something changed
+            if new_count > 0 or departed_count > 0:
+                state["welcomed"] = welcomed
+                save_state(state)
         except Exception as e:
             log(f"[join] error: {e}")
             traceback.print_exc()
@@ -1237,5 +1246,17 @@ if __name__ == "__main__":
     t1 = threading.Thread(target=fast_join_watcher, daemon=True)
     t2 = threading.Thread(target=slow_inactivity_watcher, daemon=True)
     t1.start(); t2.start()
+    
+    # Monitor threads and exit if either dies
     while not stop_event.is_set():
-        time.sleep(1)
+        time.sleep(5)  # Check every 5 seconds
+        if not t1.is_alive():
+            log("💀 FATAL: fast_join_watcher thread died unexpectedly!")
+            stop_event.set()
+            sys.exit(1)
+        if not t2.is_alive():
+            log("💀 FATAL: slow_inactivity_watcher thread died unexpectedly!")
+            stop_event.set()
+            sys.exit(1)
+    
+    log("Centauri Guardian daemon stopped.")
