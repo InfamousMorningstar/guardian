@@ -1,17 +1,59 @@
-import os, time, json, signal, threading, smtplib, requests, math, random
+import os, sys, time, json, signal, threading, smtplib, requests, math, random
 import traceback
+import re
+import shutil
 from datetime import datetime, timedelta, timezone
-
-
-def log(msg):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] {msg}", flush=True)
-
 from email.mime.text import MIMEText
+from email.utils import formataddr
+from html import escape
 from dateutil import parser as dtp
 
+# Try to import file locking modules
+try:
+    import fcntl  # Unix file locking
+    HAS_FCNTL = True
+except ImportError:
+    HAS_FCNTL = False
+
+try:
+    import msvcrt  # Windows file locking
+    WINDOWS = True
+except ImportError:
+    WINDOWS = False
+
+# ============================================================================
+# Enhanced Logging with Levels
+# ============================================================================
+
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+LOG_LEVELS = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
+CURRENT_LOG_LEVEL = LOG_LEVELS.get(LOG_LEVEL, 1)
+
+def _log(level_name: str, msg: str):
+    """Internal log function with level"""
+    level = LOG_LEVELS.get(level_name.upper(), 1)
+    if level < CURRENT_LOG_LEVEL:
+        return
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    prefix = level_name.upper()[:5]
+    print(f"[{ts}] [{prefix}] {msg}", flush=True)
+
+# Backward compatibility - default to INFO
+def log(msg: str):
+    _log("INFO", msg)
+
+def log_debug(msg: str): _log("DEBUG", msg)
+def log_info(msg: str): _log("INFO", msg)
+def log_warn(msg: str): _log("WARNING", msg)
+def log_error(msg: str): _log("ERROR", msg)
+def log_critical(msg: str): _log("CRITICAL", msg)
 
 
+
+
+# ============================================================================
+# Configuration Validation & Loading
+# ============================================================================
 
 REQUIRED_ENVS = [
     "PLEX_TOKEN","TAUTULLI_URL","TAUTULLI_API_KEY",
@@ -21,44 +63,103 @@ missing = [k for k in REQUIRED_ENVS if not os.environ.get(k)]
 if missing:
     raise SystemExit(f"Missing required env(s): {', '.join(missing)}")
 
+def validate_email(email: str) -> bool:
+    """Validate email format"""
+    if not email:
+        return False
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email))
 
-# ---- Config via env ----
-PLEX_TOKEN       = os.environ["PLEX_TOKEN"]
-PLEX_SERVER_NAME = os.environ.get("PLEX_SERVER_NAME","")
-TAUTULLI_URL     = os.environ["TAUTULLI_URL"].rstrip("/")
+def validate_url(url: str) -> bool:
+    """Validate URL format"""
+    try:
+        from urllib.parse import urlparse
+        result = urlparse(url)
+        return all([result.scheme in ['http', 'https'], result.netloc])
+    except:
+        return False
+
+def validate_int(value: str, default: int, min_val: int = 1, max_val: int = 365) -> int:
+    """Validate and convert integer with bounds"""
+    try:
+        val = int(value) if value else default
+        if val < min_val or val > max_val:
+            log_warn(f"Value {val} out of range [{min_val}, {max_val}], using default {default}")
+            return default
+        return val
+    except (ValueError, TypeError):
+        log_warn(f"Invalid integer value '{value}', using default {default}")
+        return default
+
+# Load and validate configuration
+PLEX_TOKEN = os.environ["PLEX_TOKEN"]
+PLEX_SERVER_NAME = os.environ.get("PLEX_SERVER_NAME", "")
+TAUTULLI_URL = os.environ["TAUTULLI_URL"].rstrip("/")
 TAUTULLI_API_KEY = os.environ["TAUTULLI_API_KEY"]
 
-SMTP_HOST        = os.environ["SMTP_HOST"]
-SMTP_PORT        = int(os.environ.get("SMTP_PORT","587"))
-SMTP_USERNAME    = os.environ["SMTP_USERNAME"]
-SMTP_PASSWORD    = os.environ["SMTP_PASSWORD"]
-SMTP_FROM        = os.environ["SMTP_FROM"]
-ADMIN_EMAIL      = os.environ["ADMIN_EMAIL"]
+if not validate_url(TAUTULLI_URL):
+    raise SystemExit(f"Invalid TAUTULLI_URL: {TAUTULLI_URL}")
 
-WARN_DAYS        = int(os.environ.get("WARN_DAYS","27"))
-KICK_DAYS        = int(os.environ.get("KICK_DAYS","30"))
+SMTP_HOST = os.environ["SMTP_HOST"]
+SMTP_PORT = validate_int(os.environ.get("SMTP_PORT", "587"), 587, 1, 65535)
+SMTP_USERNAME = os.environ["SMTP_USERNAME"]
+SMTP_PASSWORD = os.environ["SMTP_PASSWORD"]
+SMTP_FROM = os.environ["SMTP_FROM"]
+ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
 
-# Validate configuration
+if not validate_email(SMTP_FROM):
+    raise SystemExit(f"Invalid SMTP_FROM email: {SMTP_FROM}")
+if not validate_email(ADMIN_EMAIL):
+    raise SystemExit(f"Invalid ADMIN_EMAIL: {ADMIN_EMAIL}")
+
+WARN_DAYS = validate_int(os.environ.get("WARN_DAYS", "27"), 27, 1, 90)
+KICK_DAYS = validate_int(os.environ.get("KICK_DAYS", "30"), 30, 1, 365)
+
 if WARN_DAYS >= KICK_DAYS:
     raise SystemExit(f"Configuration error: WARN_DAYS ({WARN_DAYS}) must be less than KICK_DAYS ({KICK_DAYS})")
 
-CHECK_NEW_USERS_SECS   = int(os.environ.get("CHECK_NEW_USERS_SECS","120"))
-CHECK_INACTIVITY_SECS  = int(os.environ.get("CHECK_INACTIVITY_SECS","1800"))
+CHECK_NEW_USERS_SECS = validate_int(os.environ.get("CHECK_NEW_USERS_SECS", "120"), 120, 60, 3600)
+CHECK_INACTIVITY_SECS = validate_int(os.environ.get("CHECK_INACTIVITY_SECS", "1800"), 1800, 300, 86400)
 
-# Dry run mode - if true, log actions but don't actually remove users
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() in ("true", "1", "yes")
 
-# VIP protection - these users are protected from auto-removal
-VIP_EMAILS = [ADMIN_EMAIL.lower()]  # Admin is always VIP
-# Add additional VIP usernames from environment variable (comma-separated)
+VIP_EMAILS = [ADMIN_EMAIL.lower()]
 VIP_NAMES_STR = os.environ.get("VIP_NAMES", "")
 VIP_NAMES = [name.strip().lower() for name in VIP_NAMES_STR.split(",") if name.strip()]
 
-STATE_DIR  = "/app/state"
+# Health check port
+HEALTH_CHECK_PORT = validate_int(os.environ.get("HEALTH_CHECK_PORT", "8080"), 8080, 1024, 65535)
+
+STATE_DIR = "/app/state"
 STATE_FILE = f"{STATE_DIR}/state.json"
+STATE_BACKUP_DIR = f"{STATE_DIR}/backups"
+STATE_LOCK_FILE = f"{STATE_FILE}.lock"
+
 os.makedirs(STATE_DIR, exist_ok=True)
+os.makedirs(STATE_BACKUP_DIR, exist_ok=True)
+
+# Thread-safe state lock
+state_lock = threading.Lock()
+
+# Metrics tracking
+metrics = {
+    "start_time": datetime.now(timezone.utc).isoformat(),
+    "users_welcomed": 0,
+    "users_warned": 0,
+    "users_removed": 0,
+    "emails_sent": 0,
+    "emails_failed": 0,
+    "api_errors": 0,
+    "state_saves": 0,
+    "state_loads": 0,
+    "last_activity": None
+}
 
 stop_event = threading.Event()
+
+# Email retry queue
+email_retry_queue = []
+email_queue_lock = threading.Lock()
 
 from plexapi.myplex import MyPlexAccount
 import time
@@ -72,17 +173,22 @@ def get_plex_account():
     return MyPlexAccount(token=token)
 
 def get_plex_server_resource(acct):
+    """Get Plex server resource (validation only, server name is optional)"""
     target = os.environ.get("PLEX_SERVER_NAME")
     if not target:
-        raise SystemExit("PLEX_SERVER_NAME missing")
-
-    # Be tolerant: some plexapi versions expose .provides == "server"
-    # others prefer .product == "Plex Media Server"
-    for res in acct.resources():
-        if (getattr(res, "provides", None) == "server" or getattr(res, "product", "") == "Plex Media Server"):
-            if res.name == target:
-                return res
-    raise SystemExit(f"Server '{target}' not found in Plex account resources")
+        return None  # Server name is optional
+    
+    try:
+        for res in acct.resources():
+            if (getattr(res, "provides", None) == "server" or 
+                getattr(res, "product", "") == "Plex Media Server"):
+                if res.name == target:
+                    return res
+        log_warn(f"Server '{target}' not found in Plex account resources")
+        return None
+    except Exception as e:
+        log_warn(f"Error getting server resource: {e}")
+        return None
 
 
 
@@ -139,27 +245,181 @@ def test_discord_notifications():
     log("[test] ✅ All test notifications sent!")
 
 
+# ============================================================================
+# State Management with Backup & Recovery
+# ============================================================================
+
 def load_state():
+    """Load state file with error handling and recovery"""
+    default_state = {
+        "welcomed": {},
+        "warned": {},
+        "removed": {},
+        "last_inactivity_scan": None
+    }
+    
     if not os.path.exists(STATE_FILE):
-        return {"welcomed": {}, "warned": {}, "removed": {}, "last_inactivity_scan": None}
-    with open(STATE_FILE,"r") as f:
-        return json.load(f)
+        return default_state
+    
+    with state_lock:
+        try:
+            with open(STATE_FILE, "r") as f:
+                state = json.load(f)
+            
+            # Validate state structure
+            if not isinstance(state, dict):
+                raise ValueError("State is not a dictionary")
+            
+            # Ensure all required keys exist
+            for key in default_state:
+                if key not in state:
+                    state[key] = default_state[key]
+            
+            metrics["state_loads"] += 1
+            return state
+            
+        except json.JSONDecodeError as e:
+            log_error(f"State file JSON decode error: {e}, attempting recovery...")
+            return _recover_state_from_backup(default_state)
+            
+        except Exception as e:
+            log_error(f"Error loading state: {e}, attempting recovery...")
+            return _recover_state_from_backup(default_state)
 
-def save_state(state):
-    tmp = STATE_FILE + ".tmp"
-    with open(tmp,"w") as f:
-        json.dump(state, f, indent=2, sort_keys=True)
-    os.replace(tmp, STATE_FILE)
+def _recover_state_from_backup(default_state):
+    """Attempt to recover state from backup"""
+    if not os.path.exists(STATE_BACKUP_DIR):
+        log_warn("No backup directory found, using default state")
+        return default_state
+    
+    backup_files = sorted([f for f in os.listdir(STATE_BACKUP_DIR) 
+                          if f.startswith("state.json.backup.")], 
+                         reverse=True)[:5]
+    
+    for backup_file in backup_files:
+        backup_path = os.path.join(STATE_BACKUP_DIR, backup_file)
+        try:
+            with open(backup_path, "r") as f:
+                state = json.load(f)
+                log_warn(f"Recovered state from backup: {backup_file}")
+                return state
+        except Exception as e:
+            log_warn(f"Backup {backup_file} failed: {e}")
+            continue
+    
+    log_warn("No valid backup found, using default state")
+    return default_state
 
-def send_email(to_addr, subject, html_body):
-    msg = MIMEText(html_body, "html")
-    msg["Subject"] = subject
-    msg["From"] = SMTP_FROM
-    msg["To"] = to_addr
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
-        s.starttls()
-        s.login(SMTP_USERNAME, SMTP_PASSWORD)
-        s.sendmail(SMTP_FROM, [to_addr], msg.as_string())
+def save_state(state, backup=True):
+    """Save state file atomically with backup"""
+    try:
+        # Create backup before writing
+        if backup and os.path.exists(STATE_FILE):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_file = os.path.join(STATE_BACKUP_DIR, f"state.json.backup.{timestamp}")
+            try:
+                shutil.copy2(STATE_FILE, backup_file)
+                # Keep only last 10 backups
+                backups = sorted([os.path.join(STATE_BACKUP_DIR, f) 
+                                 for f in os.listdir(STATE_BACKUP_DIR)
+                                 if f.startswith("state.json.backup.")])
+                for old_backup in backups[:-10]:
+                    try:
+                        os.remove(old_backup)
+                    except:
+                        pass
+            except Exception as e:
+                log_warn(f"Backup creation failed: {e}")
+        
+        # Atomic write with lock
+        with state_lock:
+            tmp_file = STATE_FILE + ".tmp"
+            with open(tmp_file, "w") as f:
+                json.dump(state, f, indent=2, sort_keys=True)
+                f.flush()
+                if hasattr(os, 'fsync'):
+                    os.fsync(f.fileno())  # Force write to disk
+            
+            # Atomic replace
+            os.replace(tmp_file, STATE_FILE)
+            
+            # Set secure permissions (Unix)
+            if not WINDOWS:
+                try:
+                    os.chmod(STATE_FILE, 0o600)
+                except:
+                    pass
+        
+        metrics["state_saves"] += 1
+        return True
+        
+    except Exception as e:
+        log_error(f"Failed to save state: {e}")
+        traceback.print_exc()
+        return False
+
+# ============================================================================
+# Email Functions with Retry Queue
+# ============================================================================
+
+def send_email(to_addr, subject, html_body, retry=True):
+    """Send email with retry support"""
+    if not validate_email(to_addr):
+        log_error(f"[email] Invalid email address: {to_addr}")
+        metrics["emails_failed"] += 1
+        return False
+    
+    try:
+        msg = MIMEText(html_body, "html")
+        msg["Subject"] = subject
+        msg["From"] = formataddr(("Centauri Guardian", SMTP_FROM))
+        msg["To"] = to_addr
+        
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
+            s.starttls()
+            s.login(SMTP_USERNAME, SMTP_PASSWORD)
+            s.sendmail(SMTP_FROM, [to_addr], msg.as_string())
+        
+        metrics["emails_sent"] += 1
+        log_debug(f"[email] Sent email to {to_addr}: {subject}")
+        return True
+        
+    except Exception as e:
+        metrics["emails_failed"] += 1
+        log_error(f"[email] Failed to send email to {to_addr}: {e}")
+        
+        # Add to retry queue if retry enabled
+        if retry:
+            with email_queue_lock:
+                email_retry_queue.append({
+                    "to": to_addr,
+                    "subject": subject,
+                    "body": html_body,
+                    "retries": 0,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+        
+        return False
+
+def process_email_retry_queue():
+    """Process emails in retry queue"""
+    if not email_retry_queue:
+        return
+    
+    with email_queue_lock:
+        retry_items = [item for item in email_retry_queue if item["retries"] < 3]
+        email_retry_queue.clear()
+    
+    for item in retry_items:
+        item["retries"] += 1
+        success = send_email(item["to"], item["subject"], item["body"], retry=False)
+        
+        if not success and item["retries"] < 3:
+            # Re-add to queue
+            with email_queue_lock:
+                email_retry_queue.append(item)
+        elif not success:
+            log_warn(f"[email] Giving up on email to {item['to']} after {item['retries']} retries")
 
 def plex_headers():
     return {
@@ -254,13 +514,19 @@ def remove_friend(acct, plex_user):
         return False
 
 def tautulli(cmd, **params):
+    """Call Tautulli API with error handling"""
     payload = {"apikey": TAUTULLI_API_KEY, "cmd": cmd, **params}
-    r = requests.get(f"{TAUTULLI_URL}/api/v2", params=payload, timeout=30)
-    r.raise_for_status()
-    j = r.json()
-    if j.get("response",{}).get("result") != "success":
-        raise RuntimeError(f"Tautulli API error: {j}")
-    return j["response"]["data"]
+    try:
+        r = requests.get(f"{TAUTULLI_URL}/api/v2", params=payload, timeout=30)
+        r.raise_for_status()
+        j = r.json()
+        if j.get("response", {}).get("result") != "success":
+            metrics["api_errors"] += 1
+            raise RuntimeError(f"Tautulli API error: {j}")
+        return j["response"]["data"]
+    except requests.RequestException as e:
+        metrics["api_errors"] += 1
+        raise RuntimeError(f"Tautulli API request failed: {e}")
 
 def tautulli_users():
     return tautulli("get_users")
@@ -285,14 +551,23 @@ def tautulli_delete_user(user_id):
         return False
 
 def tautulli_last_watch(user_id):
-    hist = tautulli("get_history", user_id=user_id, length=1, order_column="date", order_dir="desc")
-    records = hist.get("data",[])
-    if not records:
+    """Get last watch date for a user"""
+    try:
+        hist = tautulli("get_history", user_id=user_id, length=1, 
+                       order_column="date", order_dir="desc")
+        records = hist.get("data", [])
+        if not records:
+            return None
+        
+        ts = records[0].get("date")
+        if ts is None:
+            return None
+        
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc)
+        
+    except Exception as e:
+        log_warn(f"[tautulli] Error getting last watch for user {user_id}: {e}")
         return None
-    ts = records[0].get("date")
-    if ts is None:
-        return None
-    return datetime.fromtimestamp(int(ts), tz=timezone.utc)
 
 # ---- Email templates ----
 # ---------- Centauri Email UI (paste below your imports) ----------
@@ -965,52 +1240,74 @@ def fast_join_watcher():
                 except Exception:
                     pass
                 
-                # Only welcome users who joined within the last 7 days
+                # Welcome users who joined within the last 7 days OR are newly detected with unknown join date
                 # This prevents welcoming users who were added before daemon started
-                if created and (now - created) < timedelta(days=7):
+                should_welcome = False
+                if created:
+                    days_since_join = (now - created).days
+                    if days_since_join < 7:
+                        should_welcome = True
+                        log(f"[join] NEW: {u.title or u.username} ({u.email or 'no email'}) id={uid} (joined {days_since_join}d ago)")
+                    else:
+                        # User exists but joined more than 7 days ago - just track them silently
+                        log(f"[join] EXISTING (silent track): {u.title or u.username} (joined {days_since_join}d ago)")
+                        welcomed[uid] = created.isoformat()  # Use their actual join date
+                        new_count += 1
+                else:
+                    # Can't determine when they joined - but they're new to our tracking
+                    # Assume they're new and send welcome email (could be API limitation)
+                    should_welcome = True
                     display = u.title or u.username or "there"
-                    log(f"[join] NEW: {display} ({u.email or 'no email'}) id={uid} (joined {(now-created).days}d ago)")
+                    log(f"[join] NEW (unknown join date): {display} ({u.email or 'no email'}) id={uid} - assuming new user")
+                
+                if should_welcome:
+                    display = u.title or u.username or "there"
+                    log_info(f"[join] Sending welcome email to {display} ({u.email or 'no email'})")
                     if u.email:
                         try:
                             send_email(u.email, "Access confirmed", welcome_email_html(display))
                             log(f"[join] welcome sent -> {u.email}")
                         except Exception as e:
-                            log(f"[join] welcome email error: {e}")
+                            log_error(f"[join] welcome email error: {e}")
                     try:
                         send_email(ADMIN_EMAIL, "Centauri: New member onboarded",
                                    admin_join_html({"id": uid, "title": display, "email": u.email}))
                         log(f"[join] admin notice sent")
                     except Exception as e:
-                        log(f"[join] admin email error: {e}")
+                        log_error(f"[join] admin email error: {e}")
                     send_discord(f"👤 New Plex user joined: {display} ({u.email or 'no email'})")
                     welcomed[uid] = now.isoformat()
                     new_count += 1
-                elif created:
-                    # User exists but joined more than 7 days ago - just track them silently
-                    log(f"[join] EXISTING (silent track): {u.title or u.username} (joined {(now-created).days}d ago)")
-                    welcomed[uid] = created.isoformat()  # Use their actual join date
-                    new_count += 1
-                else:
-                    # Can't determine when they joined - track them with current time
-                    log(f"[join] UNKNOWN join date: {u.title or u.username} - tracking from now")
-                    welcomed[uid] = now.isoformat()
-                    new_count += 1
+                    metrics["users_welcomed"] += 1
             if new_count == 0:
                 log("[join] no new users")
             
-            # Only save state if something changed
-            if new_count > 0 or departed_count > 0:
-                state["welcomed"] = welcomed
-                save_state(state)
+            # Always save state to persist welcomed dict updates
+            log_debug(f"[join] Saving state with {len(welcomed)} users in welcomed dict")
+            state["welcomed"] = welcomed
+            save_state(state)
+            log_debug(f"[join] State saved successfully")
+            
+            # Process email retry queue
+            process_email_retry_queue()
+            
+            metrics["last_activity"] = datetime.now(timezone.utc).isoformat()
+            
         except Exception as e:
-            log(f"[join] error: {e}")
+            log_error(f"[join] error: {e}")
             traceback.print_exc()
         time.sleep(CHECK_NEW_USERS_SECS)
 
 def slow_inactivity_watcher():
     log("[inactive] loop thread started")
     acct = get_plex_account()
-    server = get_plex_server_resource(acct)
+    
+    # Validate server exists (but don't store unused variable)
+    if PLEX_SERVER_NAME:
+        server = get_plex_server_resource(acct)
+        if not server:
+            log_warn(f"[inactive] Server '{PLEX_SERVER_NAME}' not found, continuing anyway")
+    
     tick = 0
 
     while not stop_event.is_set():
@@ -1166,6 +1463,7 @@ def slow_inactivity_watcher():
                         log(f"[inactive] admin warn email error: {e}")
                     send_discord(f"⚠️ Warned {display} (~{days}d inactive)")
                     warned[uid] = now.isoformat()
+                    metrics["users_warned"] += 1
                     acted = True
 
                 if days >= KICK_DAYS and uid not in removed:
@@ -1211,52 +1509,156 @@ def slow_inactivity_watcher():
                     tautulli_status = ' (+ Tautulli DB)' if (ok and tautulli_deleted) else (' (Tautulli DB failed)' if ok else '')
                     send_discord(f"{'[DRY_RUN] ' if DRY_RUN else ''}🗑️ Removal {status_emoji} {display}{tautulli_status} :: {reason}")
                     removed[uid] = {"when": now.isoformat(), "ok": ok, "reason": reason, "tautulli_deleted": tautulli_deleted}
+                    if ok:
+                        metrics["users_removed"] += 1
                     acted = True
 
+            state["welcomed"] = welcomed  # Preserve welcomed dict (modified by this thread during grace period checks)
             state["warned"] = warned
             state["removed"] = removed
+            # Preserve welcomed dict from state (modified by join watcher)
+            # Don't overwrite with our local copy which might be stale
             state["last_inactivity_scan"] = now.isoformat()
             save_state(state)
+            
+            metrics["last_activity"] = now.isoformat()
+            
             if not acted:
-                log("[inactive] no actions this tick")
+                log_debug("[inactive] no actions this tick")
+            
+            # Process email retry queue
+            process_email_retry_queue()
+            
         except Exception as e:
-            log(f"[inactive] error: {e}")
+            log_error(f"[inactive] error: {e}")
             traceback.print_exc()
 
         time.sleep(CHECK_INACTIVITY_SECS)
+
+# ============================================================================
+# Health Check HTTP Server
+# ============================================================================
+
+def health_check_server():
+    """Run HTTP health check server"""
+    try:
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        
+        class HealthHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/health":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    
+                    health_data = {
+                        "status": "healthy",
+                        "uptime_seconds": (datetime.now(timezone.utc) - 
+                                         datetime.fromisoformat(metrics["start_time"])).total_seconds(),
+                        "metrics": metrics,
+                        "dry_run": DRY_RUN,
+                        "threads": {
+                            "join_watcher": t1.is_alive() if 't1' in globals() else False,
+                            "inactivity_watcher": t2.is_alive() if 't2' in globals() else False
+                        }
+                    }
+                    
+                    self.wfile.write(json.dumps(health_data, indent=2).encode())
+                elif self.path == "/metrics":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(metrics, indent=2).encode())
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            
+            def log_message(self, format, *args):
+                log_debug(f"[health] {format % args}")
+        
+        server = HTTPServer(("0.0.0.0", HEALTH_CHECK_PORT), HealthHandler)
+        log_info(f"[health] Health check server started on port {HEALTH_CHECK_PORT}")
+        
+        while not stop_event.is_set():
+            server.handle_request()
+            
+    except Exception as e:
+        log_warn(f"[health] Failed to start health check server: {e}")
+
+# ============================================================================
+# Signal Handlers & Graceful Shutdown
+# ============================================================================
+
 def handle_signal(sig, frame):
+    """Handle shutdown signals gracefully"""
+    log_info(f"Received signal {sig}, initiating graceful shutdown...")
     stop_event.set()
 
+def graceful_shutdown():
+    """Perform graceful shutdown"""
+    log_info("Performing graceful shutdown...")
+    
+    # Save final state
+    try:
+        state = load_state()
+        save_state(state)
+    except:
+        pass
+    
+    # Log final metrics
+    log_info(f"Final metrics: {json.dumps(metrics, indent=2)}")
+    
+    log_info("Shutdown complete")
+
 if __name__ == "__main__":
-    import sys
+    import atexit
+    
+    # Register shutdown handler
+    atexit.register(graceful_shutdown)
     
     # Check for test command
     if len(sys.argv) > 1 and sys.argv[1] == "test-discord":
         test_discord_notifications()
         sys.exit(0)
     
-    log("Centauri Guardian daemon started.")
+    log_info("Centauri Guardian daemon starting...")
+    log_info(f"Configuration: WARN_DAYS={WARN_DAYS}, KICK_DAYS={KICK_DAYS}, DRY_RUN={DRY_RUN}")
+    log_info(f"VIP protection: {len(VIP_EMAILS)} email(s) + {len(VIP_NAMES)} username(s)")
+    
     if DRY_RUN:
-        log("⚠️  DRY_RUN MODE ENABLED - No users will be removed, no emails will be sent ⚠️")
+        log_warn("DRY_RUN MODE ENABLED - No users will be removed, no emails will be sent")
     else:
-        log("✅ LIVE MODE - User removals and emails will be sent")
-    log(f"VIP protection: {len(VIP_EMAILS)} email(s) + {len(VIP_NAMES)} username(s)")
+        log_info("LIVE MODE - User removals and emails will be sent")
+    
+    # Setup signal handlers
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
-    t1 = threading.Thread(target=fast_join_watcher, daemon=True)
-    t2 = threading.Thread(target=slow_inactivity_watcher, daemon=True)
-    t1.start(); t2.start()
     
-    # Monitor threads and exit if either dies
-    while not stop_event.is_set():
-        time.sleep(5)  # Check every 5 seconds
-        if not t1.is_alive():
-            log("💀 FATAL: fast_join_watcher thread died unexpectedly!")
-            stop_event.set()
-            sys.exit(1)
-        if not t2.is_alive():
-            log("💀 FATAL: slow_inactivity_watcher thread died unexpectedly!")
-            stop_event.set()
-            sys.exit(1)
+    # Start worker threads
+    t1 = threading.Thread(target=fast_join_watcher, daemon=True, name="JoinWatcher")
+    t2 = threading.Thread(target=slow_inactivity_watcher, daemon=True, name="InactivityWatcher")
+    t3 = threading.Thread(target=health_check_server, daemon=True, name="HealthCheck")
     
-    log("Centauri Guardian daemon stopped.")
+    t1.start()
+    t2.start()
+    t3.start()
+    
+    log_info("All threads started")
+    
+    # Monitor threads
+    try:
+        while not stop_event.is_set():
+            time.sleep(5)
+            if not t1.is_alive():
+                log_critical("FATAL: fast_join_watcher thread died unexpectedly!")
+                stop_event.set()
+                sys.exit(1)
+            if not t2.is_alive():
+                log_critical("FATAL: slow_inactivity_watcher thread died unexpectedly!")
+                stop_event.set()
+                sys.exit(1)
+    except KeyboardInterrupt:
+        log_info("Received keyboard interrupt")
+    finally:
+        graceful_shutdown()
+        log_info("Centauri Guardian daemon stopped.")
