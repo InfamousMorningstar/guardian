@@ -1,6 +1,97 @@
 # Plex Auto-Prune Daemon
 
-A Docker container that automatically manages Plex user access based on activity levels. Perfect for TrueNAS Scale deployment.
+**Automatically manage Plex user access based on viewing activity.** This daemon monitors your Plex server, sends welcome emails to new users, warns inactive users, and removes users who haven't watched anything in 30 days.
+
+## 📺 What This App Does
+
+### The 30-Day Activity Rule
+
+**Simple:** Watch at least one thing every 30 days, or lose access automatically.
+
+### Timeline for New Users
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     NEW USER LIFECYCLE                          │
+└─────────────────────────────────────────────────────────────────┘
+
+Day 0  (0h)  → User joins Plex
+             └─ ✅ Welcome email sent instantly
+             └─ 📝 Tracked in welcomed list
+
+Day 0-1      → 24-Hour Grace Period
+             └─ ⏸️  No inactivity tracking
+             └─ 🎬 User can explore without pressure
+
+Day 1  (24h) → Tracking Begins
+             └─ ⏱️  Inactivity clock starts
+             └─ Baseline: join_date + 24 hours
+             
+             Two paths from here:
+             
+             ✅ USER WATCHES SOMETHING:
+                └─ Timer resets to last watch date
+                └─ They're safe! Clock resets every time they watch
+             
+             ⚠️  USER NEVER WATCHES:
+                Day 27-28 → Warning email sent
+                           ("3 days left to watch or lose access")
+                
+                Day 30-31 → Removed automatically
+                           └─ Removed from Plex
+                           └─ Removed from Tautulli database
+                           └─ Removal email sent
+                           └─ Admin notified
+
+┌─────────────────────────────────────────────────────────────────┐
+│  TL;DR: Watch something within first 30 days (after 24h grace) │
+│         then watch at least once per 30 days to keep access    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Timeline for Existing Users
+
+If you deploy this daemon and already have users on your Plex:
+
+- **No 24h grace needed** (they're existing users)
+- **Has watch history in Tautulli?** → Last watch date used
+- **No watch history?** → `Plex createdAt + 24h` used as baseline
+- **Can't determine join date?** → User is SKIPPED (safety first)
+- Same 27-day warning, 30-day removal threshold
+
+### What Gets Removed
+
+When the 30-day threshold is reached:
+
+1. ✅ **User removed from Plex** - Access revoked via official PlexAPI
+2. ✅ **User removed from Tautulli** - Database cleanup (watch history deleted)
+3. ✅ **Removal email sent to user** - Professional notification
+4. ✅ **Admin notification sent** - You get a detailed report
+5. ✅ **Discord alert** (optional) - Webhook notification
+6. ✅ **State tracking updated** - Marked in `state.json`
+
+### VIP Protection
+
+**Never remove specific users** regardless of activity:
+
+- ✅ Admin email (automatic)
+- ✅ Specific usernames (via `VIP_NAMES` env variable)
+- ✅ VIP check happens BEFORE any removal logic
+
+Example: `VIP_NAMES=mom,dad,brother,bestfriend`
+
+### Dry Run Mode
+
+**Test before going live:**
+
+```
+DRY_RUN=true   → Logs what WOULD happen, no actual removals
+DRY_RUN=false  → Live mode, users actually get removed
+```
+
+**Recommendation:** Run in dry run mode for 24-48 hours first, check logs, then switch to live mode.
+
+---
 
 ## Recent Updates (v2.0)
 
@@ -81,25 +172,51 @@ This will:
 
 ## How Inactivity Tracking Works
 
-### New Users (Detected by Daemon)
-When a new user joins while the daemon is running:
-1. User is added to the `welcomed` tracking within 2 days of joining
-2. **24-hour grace period**: No inactivity checks for first 24 hours
-3. **Activity baseline**: If user never watches anything, baseline = `join_date + 24 hours`
-4. **Timeline example**:
-   - Day 0: User joins Plex
-   - Day 0-1: Grace period (no tracking)
-   - Day 27-28: Warning email sent (if no activity since Day 1)
-   - Day 30-31: User removed (if still no activity)
+### The Math Behind the Magic
 
-### Existing Users (Added Before Daemon Started)
-For users who were already on your Plex when you deploy the daemon:
-1. No grace period needed (they're existing users)
-2. **Activity baseline**: If user has Tautulli watch history, that's used
-3. **No watch history**: Baseline = `Plex createdAt + 24 hours`
-4. **Protection**: If we can't determine join date → user is skipped (not removed)
+**New User Example:**
+```
+User "Alice" joins: 2025-11-01 at 10:00 AM
 
-### Important Notes
+Hour 0-24:        Grace period (completely skipped)
+                  Log: "skip NEW USER (24hr grace): Alice (joined 5.2h ago)"
+
+After 24 hours:   Tracking begins
+                  
+                  Scenario A: Alice watches a movie on Day 2
+                  └─ last_watch = 2025-11-03 10:00 AM (actual watch time)
+                  └─ days = 0 (just watched)
+                  └─ Status: ✅ Safe
+                  
+                  Scenario B: Alice never watches anything
+                  └─ last_watch = 2025-11-01 10:00 AM + 24h = 2025-11-02 10:00 AM
+                  └─ days = (now - baseline).days
+                  
+                  Day 27: days = 25 → No action yet
+                  Day 28: days = 26 → No action yet
+                  Day 29: days = 27 → ⚠️  WARNING EMAIL SENT
+                  Day 30: days = 28 → Still monitoring...
+                  Day 31: days = 29 → Still monitoring...
+                  Day 32: days = 30 → 🗑️ REMOVED
+```
+
+**Existing User Example:**
+```
+User "Bob" was added before daemon started
+
+Daemon checks Bob:
+  1. Check Tautulli: Does Bob have watch history?
+     YES → Use last watch date from Tautulli
+     NO  → Use Plex createdAt + 24h as baseline
+     
+  2. Calculate: days = (now - last_watch).days
+  
+  3. Compare:
+     days >= 27 and days < 30 → Send warning
+     days >= 30                → Remove user
+```
+
+### Key Safety Features
 - ✅ **Watch history always wins**: If Tautulli has watch data, that's the primary source
 - ✅ **Fair to existing users**: Both new and existing users get the `+24h` grace in baseline calculation
 - ✅ **Safety first**: Users with unknown join dates are skipped, not assumed inactive
