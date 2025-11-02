@@ -1424,11 +1424,16 @@ def slow_inactivity_watcher():
                 tuser = (tu.get("username") or "").lower()
                 temail= (tu.get("email") or "").lower()
 
+                # Skip Tautulli's "local" user (ID: 0) - represents local plays, not a Plex user account
+                if tid == 0 or tid == "0" or tuser == "local":
+                    log_debug(f"[inactive] Skipping Tautulli local user (ID: {tid}) - not a Plex user account")
+                    continue
+
                 pu = plex_by_email.get(temail) or plex_by_username.get(tuser)
                 if not pu:
                     # User in Tautulli but not matched in Plex - could be data mismatch
-                    log(f"[inactive] WARNING: Tautulli user '{tuser or temail}' (ID: {tid}) not found in Plex users")
-                    log(f"[inactive] This could mean: email/username changed, user deleted, or data mismatch")
+                    log_warn(f"[inactive] WARNING: Tautulli user '{tuser or temail}' (ID: {tid}) not found in Plex users")
+                    log_debug(f"[inactive] This could mean: email/username changed, user deleted, or data mismatch")
                     continue
                 uid = str(pu.id)
                 display = pu.title or pu.username or "there"
