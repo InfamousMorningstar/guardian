@@ -469,8 +469,130 @@ When a user is removed for inactivity:
 1. Check `DRY_RUN=false` is set
 2. Verify Plex token has admin permissions
 3. Check container logs for errors
-4. Run `test_plex_api.py` to verify connectivity
+4. Run `test_apis.py` to verify connectivity (see API Verification section below)
 5. See `API_VERIFICATION.md` for detailed diagnostics
+
+## API Verification
+
+How to verify that Plex API and Tautulli API are working correctly:
+
+### Method 1: Run Comprehensive Test Script (Recommended)
+
+Test both APIs at once with a single command:
+
+```bash
+# From inside the container or with environment variables set
+python3 test_apis.py
+```
+
+**What it tests:**
+- ✅ Plex API connectivity and authentication
+- ✅ `removeFriend()` method availability
+- ✅ User list retrieval from Plex
+- ✅ Server access verification
+- ✅ plexapi library version check
+- ✅ Tautulli API connectivity
+- ✅ Tautulli user list retrieval
+- ✅ Watch history retrieval
+- ✅ Compares user counts between Plex and Tautulli
+
+**Expected output:**
+```
+✅ ALL TESTS PASSED!
+Both Plex and Tautulli APIs are working correctly.
+```
+
+### Method 2: Check Health Endpoint (Runtime)
+
+While the daemon is running, check the health endpoint:
+
+```bash
+curl http://localhost:8080/health
+```
+
+**Returns:**
+- ✅ Daemon status (`healthy` or errors)
+- ✅ Uptime
+- ✅ Thread status (join_watcher, inactivity_watcher)
+- ✅ Dry run mode status
+
+### Method 3: Check Metrics Endpoint (Runtime)
+
+Get operational metrics:
+
+```bash
+curl http://localhost:8080/metrics
+```
+
+**Shows:**
+- ✅ `api_errors`: Number of API errors (should be 0)
+- ✅ `users_welcomed`, `users_warned`, `users_removed`: Activity counts
+- ✅ `emails_sent`, `emails_failed`: Email statistics
+- ✅ `last_activity`: Last scan timestamp
+
+**If `api_errors > 0`:** Check logs for specific API failures.
+
+### Method 4: Check Container Logs
+
+Watch the logs for API calls:
+
+```bash
+docker logs -f plex-autoprune-daemon
+```
+
+**Look for:**
+- ✅ `[join] tick X – checking new users…` - Plex API working
+- ✅ `[inactive] tick X – scanning users…` - Both APIs working
+- ✅ `[inactive] {user}: last={date}, days={days}` - Tautulli API working
+- ❌ `Plex API error` - Connection issue
+- ❌ `Tautulli API error` - Connection issue
+
+### Method 5: Test Individual APIs
+
+**Test Plex API only:**
+```bash
+python3 test_plex_api.py
+```
+
+**Test Tautulli API manually:**
+```bash
+# Replace with your values
+curl "http://YOUR_TAUTULLI_URL:8181/api/v2?apikey=YOUR_API_KEY&cmd=ping"
+```
+
+Should return: `{"response": {"result": "success"}}`
+
+### Method 6: Verify from Logs (Real-time)
+
+After daemon starts, check for successful API calls:
+
+**Successful Plex API:**
+```
+[INFO] [join] tick 1 – checking new users…
+[INFO] [join] EXISTING (first scan, silent track): UserName...
+```
+
+**Successful Tautulli API:**
+```
+[INFO] [inactive] tick 1 – scanning users…
+[INFO] [inactive] UserName: last=2025-10-31 04:04:21+00:00, days=2
+```
+
+**API Errors (if any):**
+```
+[ERROR] [join] Plex API error (attempt 1/3), retrying in 5s: ...
+[ERROR] [inactive] Tautulli API error (attempt 1/3), retrying in 5s: ...
+```
+
+### Quick Verification Checklist
+
+- [ ] Run `python3 test_apis.py` - All tests pass?
+- [ ] Check `curl http://localhost:8080/health` - Status healthy?
+- [ ] Check `curl http://localhost:8080/metrics` - `api_errors` is 0?
+- [ ] Check logs - See successful API calls?
+- [ ] Verify users are being tracked - See `last=` dates in logs?
+
+If all checkboxes are ✅, both APIs are working correctly!
 
 **Removals fail but container is working?**
 1. Check plexapi version: `docker exec plex-autoprune-daemon pip show plexapi`
