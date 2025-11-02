@@ -913,17 +913,36 @@ def fast_join_watcher():
             now = datetime.now(timezone.utc)
             
             # Clean up departed users - remove from welcomed dict if no longer in Plex
+            # Use TWO API calls to verify they're truly gone (prevents false positives from API failures)
             current_user_ids = {str(u.id) for u in friends}
-            departed = [uid for uid in welcomed.keys() if uid not in current_user_ids]
-            for uid in departed:
-                log(f"[join] DEPARTED: User {uid} no longer in Plex, removing from tracking")
-                del welcomed[uid]
+            potentially_departed = [uid for uid in welcomed.keys() if uid not in current_user_ids]
             
-            if departed:
-                # Save state immediately after cleanup
-                state["welcomed"] = welcomed
-                save_state(state)
-                log(f"[join] Cleaned up {len(departed)} departed user(s)")
+            if potentially_departed:
+                log(f"[join] Found {len(potentially_departed)} potentially departed users, verifying...")
+                time.sleep(2)  # Brief pause before second check
+                
+                # Second API call to confirm
+                try:
+                    verify_friends = acct.users()
+                    verify_ids = {str(u.id) for u in verify_friends}
+                    
+                    # Only remove if STILL not in the list after second check
+                    confirmed_departed = [uid for uid in potentially_departed if uid not in verify_ids]
+                    
+                    for uid in confirmed_departed:
+                        log(f"[join] DEPARTED (verified): User {uid} no longer in Plex, removing from tracking")
+                        del welcomed[uid]
+                    
+                    if confirmed_departed:
+                        state["welcomed"] = welcomed
+                        save_state(state)
+                        log(f"[join] Cleaned up {len(confirmed_departed)} departed user(s)")
+                    else:
+                        log(f"[join] False alarm - all {len(potentially_departed)} users still present in Plex")
+                        
+                except Exception as e:
+                    log(f"[join] Could not verify departed users (API error), skipping cleanup: {e}")
+                    # Don't remove anyone if verification fails
             
             new_count = 0
             for u in friends:
