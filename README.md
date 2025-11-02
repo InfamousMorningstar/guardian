@@ -360,15 +360,15 @@ VIP_NAMES=friend1,family_member,bestfriend
 ```yaml
 # In portainer-stack.yml
 build:
-  context: https://github.com/InfamousMorningstar/Plex-Auto-Prune.git#main
+  context: https://github.com/InfamousMorningstar/plex-autoprune.git#main
   dockerfile: Dockerfile
 ```
 
 **Option 2: Build Locally**
 ```bash
 # Clone the repository
-git clone https://github.com/InfamousMorningstar/Plex-Auto-Prune.git
-cd Plex-Auto-Prune
+git clone https://github.com/InfamousMorningstar/plex-autoprune.git
+cd plex-autoprune
 
 # Build the image
 docker build -t plex-autoprune-daemon .
@@ -486,7 +486,7 @@ When a user is removed for inactivity:
 ## File Structure
 
 ```
-guardian/
+plex-autoprune/
 ├── Dockerfile              # Container build instructions
 ├── main.py                 # Application code (1100+ lines)
 ├── requirements.txt        # Python dependencies
@@ -508,7 +508,7 @@ guardian/
   - Verification and testing procedures
   - Troubleshooting removal issues
 
-- **GitHub Repository**: https://github.com/InfamousMorningstar/Plex-Auto-Prune
+- **GitHub Repository**: https://github.com/InfamousMorningstar/plex-autoprune
 
 ## Changelog
 
