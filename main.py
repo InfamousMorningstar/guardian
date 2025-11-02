@@ -854,13 +854,14 @@ def admin_removed_html(user: dict, reason: str, status: str) -> str:
 # ---- Core workers ----
 def fast_join_watcher():
     log("[join] loop thread started")
-    state = load_state()
-    welcomed = state.get("welcomed", {})
     acct = get_plex_account()
     tick = 0
     while not stop_event.is_set():
         tick += 1
         try:
+            # Reload state each iteration to see updates from other threads
+            state = load_state()
+            welcomed = state.get("welcomed", {})
             log(f"[join] tick {tick} – checking new users…")
             # Retry logic for Plex API calls
             friends = None
@@ -920,10 +921,6 @@ def fast_join_watcher():
 
 def slow_inactivity_watcher():
     log("[inactive] loop thread started")
-    state = load_state()
-    warned = state.get("warned", {})
-    removed = state.get("removed", {})
-    welcomed = state.get("welcomed", {})  # Track when users joined
     acct = get_plex_account()
     server = get_plex_server_resource(acct)
     tick = 0
@@ -931,6 +928,11 @@ def slow_inactivity_watcher():
     while not stop_event.is_set():
         tick += 1
         try:
+            # Reload state each iteration to see updates from other threads
+            state = load_state()
+            warned = state.get("warned", {})
+            removed = state.get("removed", {})
+            welcomed = state.get("welcomed", {})  # Track when users joined
             log(f"[inactive] tick {tick} – scanning users…")
             
             # Retry logic for Plex API calls
