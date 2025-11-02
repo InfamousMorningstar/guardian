@@ -27,4 +27,4 @@ services:
       LINK_DISCORD: ${LINK_DISCORD:-}
     volumes:
       - ./state:/app/state
-      - ./main.py:/app/main.py:ro
+      # - ./main.py:/app/main.py:ro  # Dev-only: Removed for production (main.py baked into image)
