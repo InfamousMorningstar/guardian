@@ -1631,13 +1631,20 @@ def slow_inactivity_watcher():
                         created_at = pu.createdAt.replace(tzinfo=timezone.utc)
                         # Add 24 hours to give existing users the same grace period
                         last_watch = created_at + timedelta(hours=24)
+                        # Add them to welcomed dict for future tracking
+                        welcomed[uid] = created_at.isoformat()
+                        log(f"[inactive] {display}: Added to welcomed dict with createdAt: {created_at.isoformat()}")
                     except Exception:
                         pass
 
-                # If we still can't determine when they joined, skip them (don't assume they're inactive)
+                # If we still can't determine when they joined, add them to welcomed dict with current time
+                # This ensures all matched users can be tracked going forward
                 if last_watch is None:
-                    log(f"[inactive] {display}: SKIPPING - cannot determine join date or last watch time")
-                    continue
+                    log(f"[inactive] {display}: No join date found, adding to welcomed dict with detection time")
+                    welcomed[uid] = now.isoformat()
+                    # Use current time + 24h as baseline for tracking (they get a fresh grace period)
+                    last_watch = now + timedelta(hours=24)
+                    log(f"[inactive] {display}: Using detection time + 24h as baseline: {last_watch.isoformat()}")
                 
                 days = (now - last_watch).days
                 log(f"[inactive] {display}: last={last_watch}, days={days}")
