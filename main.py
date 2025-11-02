@@ -1348,8 +1348,9 @@ def fast_join_watcher():
                 except Exception:
                     pass
                 
-                # Welcome users who joined within the last 7 days OR are newly detected with unknown join date
-                # This prevents welcoming users who were added before daemon started
+                # Welcome users who joined within the last 7 days
+                # Only send welcome emails if we can VERIFY they're actually new (have createdAt date)
+                # Users without createdAt are treated as existing users (no welcome email)
                 should_welcome = False
                 if created:
                     days_since_join = (now - created).days
@@ -1362,12 +1363,15 @@ def fast_join_watcher():
                         welcomed[uid] = created.isoformat()  # Use their actual join date
                         new_count += 1
                 else:
-                    # Can't determine when they joined from Plex API - but they're new to our tracking
-                    # Their join date for our purposes is "now" (when we detect them)
-                    # Since "now" is always within 7 days, they get a welcome email
-                    should_welcome = True
+                    # Can't determine when they joined from Plex API (createdAt is None)
+                    # Assume they're EXISTING users (were in Plex before daemon started)
+                    # Track them silently WITHOUT welcome email to avoid spamming existing users
                     display = u.title or u.username or "there"
-                    log(f"[join] NEW: {display} ({u.email or 'no email'}) id={uid} - join date: {now.isoformat()} (detected now)")
+                    log(f"[join] EXISTING (unknown join date, silent track): {display} ({u.email or 'no email'}) id={uid} - tracking from now")
+                    # Use current time as their join date for tracking purposes
+                    welcomed[uid] = now.isoformat()
+                    new_count += 1
+                    should_welcome = False  # DO NOT send welcome email to users with unknown join dates
                 
                 if should_welcome:
                     display = u.title or u.username or "there"
