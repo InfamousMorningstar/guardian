@@ -911,6 +911,20 @@ def fast_join_watcher():
                 continue
                 
             now = datetime.now(timezone.utc)
+            
+            # Clean up departed users - remove from welcomed dict if no longer in Plex
+            current_user_ids = {str(u.id) for u in friends}
+            departed = [uid for uid in welcomed.keys() if uid not in current_user_ids]
+            for uid in departed:
+                log(f"[join] DEPARTED: User {uid} no longer in Plex, removing from tracking")
+                del welcomed[uid]
+            
+            if departed:
+                # Save state immediately after cleanup
+                state["welcomed"] = welcomed
+                save_state(state)
+                log(f"[join] Cleaned up {len(departed)} departed user(s)")
+            
             new_count = 0
             for u in friends:
                 uid = str(u.id)
