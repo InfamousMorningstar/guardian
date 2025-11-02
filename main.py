@@ -1367,8 +1367,13 @@ def slow_inactivity_watcher():
                 log("[inactive] Could not fetch users after 3 attempts, skipping this tick")
                 continue
                 
+            # Build mapping dictionaries for efficient lookup
             plex_by_email = {(u.email or "").lower(): u for u in plex_users}
             plex_by_username = {(u.username or "").lower(): u for u in plex_users}
+            plex_by_id = {str(u.id): u for u in plex_users}
+            
+            # Also build by "title" field (Plex display name)
+            plex_by_title = {(u.title or "").lower(): u for u in plex_users if u.title}
 
             # Retry logic for Tautulli API calls
             t_users = None
@@ -1429,10 +1434,41 @@ def slow_inactivity_watcher():
                     log_debug(f"[inactive] Skipping Tautulli local user (ID: {tid}) - not a Plex user account")
                     continue
 
-                pu = plex_by_email.get(temail) or plex_by_username.get(tuser)
+                # Try multiple matching strategies
+                pu = None
+                
+                # Strategy 1: Match by email (most reliable)
+                if temail:
+                    pu = plex_by_email.get(temail)
+                    if pu:
+                        log_debug(f"[inactive] Matched Tautulli user '{tuser or temail}' to Plex user by email")
+                
+                # Strategy 2: Match by username
+                if not pu and tuser:
+                    pu = plex_by_username.get(tuser)
+                    if pu:
+                        log_debug(f"[inactive] Matched Tautulli user '{tuser}' to Plex user by username")
+                
+                # Strategy 3: Match by title (display name)
+                if not pu and tuser:
+                    # Try matching Tautulli username against Plex title
+                    pu = plex_by_title.get(tuser)
+                    if pu:
+                        log_debug(f"[inactive] Matched Tautulli user '{tuser}' to Plex user by title")
+                
+                # Strategy 4: Try matching by removing .0 suffix (username.0 -> username)
+                if not pu and tuser and tuser.endswith('.0'):
+                    base_username = tuser[:-2]  # Remove '.0'
+                    pu = plex_by_username.get(base_username) or plex_by_title.get(base_username)
+                    if pu:
+                        log_debug(f"[inactive] Matched Tautulli user '{tuser}' to Plex user '{base_username}' (removed .0 suffix)")
+                
                 if not pu:
-                    # User in Tautulli but not matched in Plex - could be data mismatch
+                    # Log available Plex users for debugging
                     log_warn(f"[inactive] WARNING: Tautulli user '{tuser or temail}' (ID: {tid}) not found in Plex users")
+                    log_debug(f"[inactive] Tautulli data: username='{tuser}', email='{temail}', id={tid}")
+                    log_debug(f"[inactive] Available Plex usernames: {[u.username for u in plex_users if u.username]}")
+                    log_debug(f"[inactive] Available Plex emails: {[u.email for u in plex_users if u.email]}")
                     log_debug(f"[inactive] This could mean: email/username changed, user deleted, or data mismatch")
                     continue
                 uid = str(pu.id)
