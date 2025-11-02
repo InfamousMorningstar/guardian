@@ -1332,6 +1332,17 @@ def slow_inactivity_watcher():
     log("[inactive] loop thread started")
     acct = get_plex_account()
     
+    # Get owner account info for matching (owner account won't be in friends list)
+    owner_username = None
+    owner_email = None
+    try:
+        if hasattr(acct, 'username'):
+            owner_username = (acct.username or "").lower()
+        if hasattr(acct, 'email'):
+            owner_email = (acct.email or "").lower()
+    except Exception:
+        pass
+    
     # Validate server exists (but don't store unused variable)
     if PLEX_SERVER_NAME:
         server = get_plex_server_resource(acct)
