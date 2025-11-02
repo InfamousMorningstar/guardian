@@ -1605,9 +1605,27 @@ def slow_inactivity_watcher():
                     continue
 
                 # Grace period: Skip users who joined within the last 24 hours
+                # Also fix users who were incorrectly added with recent dates (should be existing users)
                 if uid in welcomed:
                     try:
                         join_date = datetime.fromisoformat(welcomed[uid])
+                        hours_since_join = (now - join_date).total_seconds() / 3600
+                        
+                        # If user has a very recent join date (< 24 hours) but has createdAt,
+                        # they're likely an existing user who was incorrectly added - fix their date
+                        if hours_since_join < 24:
+                            # Check if they have createdAt (they existed before being added to welcomed)
+                            if getattr(pu, "createdAt", None):
+                                try:
+                                    created_at = pu.createdAt.replace(tzinfo=timezone.utc)
+                                    # If their actual createdAt is older than their welcomed date, fix it
+                                    if created_at < join_date:
+                                        welcomed[uid] = created_at.isoformat()
+                                        join_date = created_at
+                                        log(f"[inactive] {display}: Fixed join date from recent ({hours_since_join:.1f}h ago) to actual createdAt: {created_at.isoformat()}")
+                                except Exception:
+                                    pass
+                        
                         hours_since_join = (now - join_date).total_seconds() / 3600
                         if hours_since_join < 24:
                             log(f"[inactive] skip NEW USER (24hr grace): {display} (joined {hours_since_join:.1f}h ago)")
@@ -1623,10 +1641,14 @@ def slow_inactivity_watcher():
                         join_date = datetime.fromisoformat(welcomed[uid])
                         # Add 24 hours to join date as the starting point for inactivity tracking
                         last_watch = join_date + timedelta(hours=24)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # If we can't parse the existing join date, don't overwrite it
+                        # Try to use it anyway (might be a different format) or use createdAt fallback
+                        log_debug(f"[inactive] {display}: Could not parse existing welcomed date: {e}")
+                        # Don't overwrite existing welcomed entry
+                
                 # For existing users (not in welcomed dict), use createdAt + 24h to be fair
-                if last_watch is None and getattr(pu, "createdAt", None):
+                if last_watch is None and uid not in welcomed and getattr(pu, "createdAt", None):
                     try:
                         created_at = pu.createdAt.replace(tzinfo=timezone.utc)
                         # Add 24 hours to give existing users the same grace period
@@ -1637,14 +1659,22 @@ def slow_inactivity_watcher():
                     except Exception:
                         pass
 
-                # If we still can't determine when they joined, add them to welcomed dict with current time
-                # This ensures all matched users can be tracked going forward
+                # If we still can't determine when they joined AND they're not in welcomed dict,
+                # Use a date far in the past (6 months ago) so they're treated as existing users
+                # This prevents them from getting a fresh 24h grace period (they're existing, not new)
+                if last_watch is None and uid not in welcomed:
+                    # Use 6 months ago as default join date for existing users with unknown join dates
+                    default_join_date = now - timedelta(days=180)
+                    welcomed[uid] = default_join_date.isoformat()
+                    # Use default join date + 24h as baseline for tracking
+                    last_watch = default_join_date + timedelta(hours=24)
+                    log(f"[inactive] {display}: No join date found, using default (6 months ago) for existing user")
+                    log(f"[inactive] {display}: Using default join date + 24h as baseline: {last_watch.isoformat()}")
+                
+                # If still no last_watch and user is in welcomed (but date couldn't be parsed), skip gracefully
                 if last_watch is None:
-                    log(f"[inactive] {display}: No join date found, adding to welcomed dict with detection time")
-                    welcomed[uid] = now.isoformat()
-                    # Use current time + 24h as baseline for tracking (they get a fresh grace period)
-                    last_watch = now + timedelta(hours=24)
-                    log(f"[inactive] {display}: Using detection time + 24h as baseline: {last_watch.isoformat()}")
+                    log_warn(f"[inactive] {display}: SKIPPING - cannot determine join date or last watch time (user in welcomed but date unparseable)")
+                    continue
                 
                 days = (now - last_watch).days
                 log(f"[inactive] {display}: last={last_watch}, days={days}")
