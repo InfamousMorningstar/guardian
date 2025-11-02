@@ -64,9 +64,20 @@ if missing:
     raise SystemExit(f"Missing required env(s): {', '.join(missing)}")
 
 def validate_email(email: str) -> bool:
-    """Validate email format"""
+    """Validate email format - handles both plain email and 'Name <email>' format"""
     if not email:
         return False
+    
+    # Extract email from "Display Name <email@domain.com>" format if present
+    email_match = re.search(r'<([^>]+)>', email)
+    if email_match:
+        # Extract email from angle brackets
+        email = email_match.group(1)
+    else:
+        # Use email as-is (plain format)
+        email = email.strip()
+    
+    # Validate email format
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return bool(re.match(pattern, email))
 
@@ -107,10 +118,22 @@ SMTP_PASSWORD = os.environ["SMTP_PASSWORD"]
 SMTP_FROM = os.environ["SMTP_FROM"]
 ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
 
+# Validate emails (extract from "Name <email>" format if needed)
+def extract_email(value: str) -> str:
+    """Extract email address from 'Name <email>' format or return as-is"""
+    email_match = re.search(r'<([^>]+)>', value)
+    if email_match:
+        return email_match.group(1)
+    return value.strip()
+
 if not validate_email(SMTP_FROM):
     raise SystemExit(f"Invalid SMTP_FROM email: {SMTP_FROM}")
 if not validate_email(ADMIN_EMAIL):
     raise SystemExit(f"Invalid ADMIN_EMAIL: {ADMIN_EMAIL}")
+
+# Extract email addresses (for use with formataddr)
+SMTP_FROM_EMAIL = extract_email(SMTP_FROM)
+ADMIN_EMAIL_ADDR = extract_email(ADMIN_EMAIL)
 
 WARN_DAYS = validate_int(os.environ.get("WARN_DAYS", "27"), 27, 1, 90)
 KICK_DAYS = validate_int(os.environ.get("KICK_DAYS", "30"), 30, 1, 365)
@@ -372,13 +395,19 @@ def send_email(to_addr, subject, html_body, retry=True):
     try:
         msg = MIMEText(html_body, "html")
         msg["Subject"] = subject
-        msg["From"] = formataddr(("Centauri Guardian", SMTP_FROM))
+        # Use SMTP_FROM as-is if it contains display name, otherwise use formataddr
+        if "<" in SMTP_FROM and ">" in SMTP_FROM:
+            msg["From"] = SMTP_FROM
+        else:
+            msg["From"] = formataddr(("Centauri Guardian", SMTP_FROM))
         msg["To"] = to_addr
         
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
             s.starttls()
             s.login(SMTP_USERNAME, SMTP_PASSWORD)
-            s.sendmail(SMTP_FROM, [to_addr], msg.as_string())
+            # Use extracted email for sendmail (SMTP server needs just the email)
+            from_email = SMTP_FROM_EMAIL if 'SMTP_FROM_EMAIL' in globals() else extract_email(SMTP_FROM)
+            s.sendmail(from_email, [to_addr], msg.as_string())
         
         metrics["emails_sent"] += 1
         log_debug(f"[email] Sent email to {to_addr}: {subject}")
