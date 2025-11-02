@@ -916,15 +916,21 @@ def fast_join_watcher():
                 uid = str(u.id)
                 if uid in welcomed:
                     continue
+                
+                # User not in welcomed dict - they're new to our tracking
+                # Check if they actually joined recently (within 7 days) to avoid welcoming very old users
                 created = None
                 try:
                     if getattr(u, "createdAt", None):
                         created = u.createdAt.replace(tzinfo=timezone.utc)
                 except Exception:
                     pass
-                if created and (now - created) < timedelta(days=2):
+                
+                # Only welcome users who joined within the last 7 days
+                # This prevents welcoming users who were added before daemon started
+                if created and (now - created) < timedelta(days=7):
                     display = u.title or u.username or "there"
-                    log(f"[join] NEW: {display} ({u.email or 'no email'}) id={uid}")
+                    log(f"[join] NEW: {display} ({u.email or 'no email'}) id={uid} (joined {(now-created).days}d ago)")
                     if u.email:
                         try:
                             send_email(u.email, "Access confirmed", welcome_email_html(display))
@@ -938,6 +944,16 @@ def fast_join_watcher():
                     except Exception as e:
                         log(f"[join] admin email error: {e}")
                     send_discord(f"👤 New Plex user joined: {display} ({u.email or 'no email'})")
+                    welcomed[uid] = now.isoformat()
+                    new_count += 1
+                elif created:
+                    # User exists but joined more than 7 days ago - just track them silently
+                    log(f"[join] EXISTING (silent track): {u.title or u.username} (joined {(now-created).days}d ago)")
+                    welcomed[uid] = created.isoformat()  # Use their actual join date
+                    new_count += 1
+                else:
+                    # Can't determine when they joined - track them with current time
+                    log(f"[join] UNKNOWN join date: {u.title or u.username} - tracking from now")
                     welcomed[uid] = now.isoformat()
                     new_count += 1
             if new_count == 0:
