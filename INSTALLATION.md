@@ -21,7 +21,7 @@ version: '3.8'
 services:
   autoprune:
     build:
-      context: https://github.com/InfamousMorningstar/plex-autoprune.git#main
+      context: https://github.com/InfamousMorningstar/plex-autoprune.git#latest
       dockerfile: Dockerfile
     container_name: plex-autoprune-daemon
     restart: unless-stopped

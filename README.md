@@ -360,7 +360,7 @@ VIP_NAMES=friend1,family_member,bestfriend
 ```yaml
 # In portainer-stack.yml
 build:
-  context: https://github.com/InfamousMorningstar/plex-autoprune.git#main
+  context: https://github.com/InfamousMorningstar/plex-autoprune.git#latest
   dockerfile: Dockerfile
 ```
 
