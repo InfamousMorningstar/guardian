@@ -1220,10 +1220,15 @@ def fast_join_watcher():
                 
             now = datetime.now(timezone.utc)
             
-            # Clean up departed users - remove from welcomed dict if no longer in Plex
+            # Clean up departed users - remove from all tracking dicts (welcomed, warned, removed) if no longer in Plex
             # Use TWO API calls to verify they're truly gone (prevents false positives from API failures)
+            warned = state.get("warned", {})
+            removed = state.get("removed", {})
             current_user_ids = {str(u.id) for u in friends}
-            potentially_departed = [uid for uid in welcomed.keys() if uid not in current_user_ids]
+            
+            # Check all state dicts for departed users
+            all_tracked_ids = set(welcomed.keys()) | set(warned.keys()) | set(removed.keys())
+            potentially_departed = [uid for uid in all_tracked_ids if uid not in current_user_ids]
             departed_count = 0
             
             if potentially_departed:
@@ -1238,15 +1243,42 @@ def fast_join_watcher():
                     # Only remove if STILL not in the list after second check
                     confirmed_departed = [uid for uid in potentially_departed if uid not in verify_ids]
                     
+                    cleaned_welcomed = 0
+                    cleaned_warned = 0
+                    cleaned_removed = 0
+                    
                     for uid in confirmed_departed:
-                        log(f"[join] DEPARTED (verified): User {uid} no longer in Plex, removing from tracking")
-                        del welcomed[uid]
+                        log(f"[join] DEPARTED (verified): User {uid} no longer in Plex, removing from all tracking")
+                        
+                        # Remove from welcomed dict
+                        if uid in welcomed:
+                            del welcomed[uid]
+                            cleaned_welcomed += 1
+                        
+                        # Remove from warned dict
+                        if uid in warned:
+                            del warned[uid]
+                            cleaned_warned += 1
+                        
+                        # Remove from removed dict (if manually removed by admin)
+                        if uid in removed:
+                            del removed[uid]
+                            cleaned_removed += 1
                     
                     departed_count = len(confirmed_departed)
                     if confirmed_departed:
                         state["welcomed"] = welcomed
+                        state["warned"] = warned
+                        state["removed"] = removed
                         save_state(state)
-                        log(f"[join] Cleaned up {departed_count} departed user(s)")
+                        cleanup_summary = []
+                        if cleaned_welcomed > 0:
+                            cleanup_summary.append(f"{cleaned_welcomed} from welcomed")
+                        if cleaned_warned > 0:
+                            cleanup_summary.append(f"{cleaned_warned} from warned")
+                        if cleaned_removed > 0:
+                            cleanup_summary.append(f"{cleaned_removed} from removed")
+                        log(f"[join] Cleaned up {departed_count} departed user(s): {', '.join(cleanup_summary)}")
                     else:
                         log(f"[join] False alarm - all {len(potentially_departed)} users still present in Plex")
                         
