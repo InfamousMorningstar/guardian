@@ -1067,10 +1067,21 @@ def slow_inactivity_watcher():
                         users_to_unmark.append(removed_uid)
                         break
             
-            # Remove them from the removed dict so they can be processed again
+            # Remove them from the removed dict AND re-add to welcomed dict with grace period
             for uid_to_unmark in users_to_unmark:
                 del removed[uid_to_unmark]
+                # Give them a fresh 24-hour grace period since they were re-added
+                welcomed[uid_to_unmark] = now.isoformat()
+                log(f"[inactive] Re-tracked user {uid_to_unmark} with new 24h grace period")
                 acted = True
+            
+            # Save state immediately after cleanup to prevent loss on crash
+            if acted:
+                state["removed"] = removed
+                state["welcomed"] = welcomed
+                save_state(state)
+                log(f"[inactive] Saved state after unmarking {len(users_to_unmark)} user(s)")
+                acted = False  # Reset for main processing loop
 
             for tu in t_users:
                 tid   = tu.get("user_id")
@@ -1079,6 +1090,9 @@ def slow_inactivity_watcher():
 
                 pu = plex_by_email.get(temail) or plex_by_username.get(tuser)
                 if not pu:
+                    # User in Tautulli but not matched in Plex - could be data mismatch
+                    log(f"[inactive] WARNING: Tautulli user '{tuser or temail}' (ID: {tid}) not found in Plex users")
+                    log(f"[inactive] This could mean: email/username changed, user deleted, or data mismatch")
                     continue
                 uid = str(pu.id)
                 display = pu.title or pu.username or "there"
