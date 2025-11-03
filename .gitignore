@@ -35,3 +35,6 @@ Thumbs.db
 *.log
 *.tmp
 get_users.py
+
+# Command documentation (keep local, not in repo)
+COMMAND.md

@@ -52,6 +52,42 @@ def log_critical(msg: str): _log("CRITICAL", msg)
 
 
 # ============================================================================
+# Early CLI Command Check (before env validation)
+# ============================================================================
+
+def show_help_early():
+    """Show help message (works without env vars)"""
+    print("Centauri Guardian CLI Commands")
+    print("=" * 80)
+    print()
+    print("Usage: python main.py <command> [identifier]")
+    print()
+    print("Commands:")
+    print("  remove-welcomed <email|username|id>  - Remove user from welcomed list")
+    print("  remove-warned <email|username|id>     - Remove user from warned list")
+    print("  remove-removed <email|username|id>    - Remove user from removed list")
+    print("  reset-user <email|username|id>        - Remove user from all lists")
+    print("  list-welcomed                         - List all welcomed users")
+    print("  list-warned                           - List all warned users")
+    print("  list-removed                          - List all removed users")
+    print("  test-discord                          - Send test Discord notifications")
+    print()
+    print("Examples:")
+    print("  python main.py remove-welcomed 'test@example.com'")
+    print("  python main.py remove-welcomed 'testuser'")
+    print("  python main.py remove-welcomed '123456789'")
+    print("  python main.py reset-user 'test@example.com'")
+    print("  python main.py list-welcomed")
+    print()
+
+# Check for help command before env validation
+if len(sys.argv) > 1:
+    cmd = sys.argv[1].lower()
+    if cmd in ("help", "-h", "--help"):
+        show_help_early()
+        sys.exit(0)
+
+# ============================================================================
 # Configuration Validation & Loading
 # ============================================================================
 
@@ -1610,85 +1646,82 @@ def slow_inactivity_watcher():
                     log(f"[inactive] skip VIP: {display} ({email or 'no-email'})")
                     continue
 
-                # Grace period: Skip users who joined within the last 24 hours
-                # Also fix users who were incorrectly added with recent dates (should be existing users)
-                if uid in welcomed:
-                    try:
-                        join_date = datetime.fromisoformat(welcomed[uid])
-                        hours_since_join = (now - join_date).total_seconds() / 3600
-                        
-                        # If user has a very recent join date (< 24 hours), check if they're actually existing
-                        # Fix their date if they have createdAt or watch history older than their welcomed date
-                        if hours_since_join < 24:
-                            # Check if they have createdAt (they existed before being added to welcomed)
-                            if getattr(pu, "createdAt", None):
-                                try:
-                                    created_at = pu.createdAt.replace(tzinfo=timezone.utc)
-                                    # If their actual createdAt is older than their welcomed date, fix it
-                                    if created_at < join_date:
-                                        welcomed[uid] = created_at.isoformat()
-                                        join_date = created_at
-                                        log(f"[inactive] {display}: Fixed join date from recent ({hours_since_join:.1f}h ago) to actual createdAt: {created_at.isoformat()}")
-                                except Exception:
-                                    pass
-                            else:
-                                # Check if they have watch history older than their welcomed date
-                                # If so, they're clearly an existing user
-                                try:
-                                    oldest_watch = tautulli_last_watch(tid)
-                                    if oldest_watch and oldest_watch < join_date:
-                                        # Use 6 months ago as default (they're existing, not new)
-                                        default_date = now - timedelta(days=180)
-                                        welcomed[uid] = default_date.isoformat()
-                                        join_date = default_date
-                                        log(f"[inactive] {display}: Fixed join date - has watch history older than welcomed date, using default (6 months ago)")
-                                except Exception:
-                                    pass
-                        
-                        hours_since_join = (now - join_date).total_seconds() / 3600
-                        if hours_since_join < 24:
-                            log(f"[inactive] skip NEW USER (24hr grace): {display} (joined {hours_since_join:.1f}h ago)")
-                            continue
-                    except Exception:
-                        pass
-
+                # Check Tautulli watch history FIRST - Tautulli always wins when available
+                # This ensures daemon matches Tautulli stats at all times
                 last_watch = tautulli_last_watch(tid)
                 
-                # For users with no watch history, use their join date as the baseline (after 24hr grace)
-                if last_watch is None and uid in welcomed:
-                    try:
-                        join_date = datetime.fromisoformat(welcomed[uid])
-                        # Add 24 hours to join date as the starting point for inactivity tracking
-                        last_watch = join_date + timedelta(hours=24)
-                    except Exception as e:
-                        # If we can't parse the existing join date, don't overwrite it
-                        # Try to use it anyway (might be a different format) or use createdAt fallback
-                        log_debug(f"[inactive] {display}: Could not parse existing welcomed date: {e}")
-                        # Don't overwrite existing welcomed entry
-                
-                # For existing users (not in welcomed dict), use createdAt + 24h to be fair
-                if last_watch is None and uid not in welcomed and getattr(pu, "createdAt", None):
-                    try:
-                        created_at = pu.createdAt.replace(tzinfo=timezone.utc)
-                        # Add 24 hours to give existing users the same grace period
-                        last_watch = created_at + timedelta(hours=24)
-                        # Add them to welcomed dict for future tracking
-                        welcomed[uid] = created_at.isoformat()
-                        log(f"[inactive] {display}: Added to welcomed dict with createdAt: {created_at.isoformat()}")
-                    except Exception:
-                        pass
+                # If user has watch history, use it directly (skip grace period - watch time is authoritative)
+                # This applies to both new users (who watched within 24h) and existing users
+                if last_watch is not None:
+                    # User has watch history - use it directly, Tautulli time is authoritative
+                    # Skip all the grace period and baseline logic - go straight to inactivity calculation
+                    log(f"[inactive] {display}: Using Tautulli watch time: {last_watch.isoformat()} (daemon matches Tautulli)")
+                else:
+                    # No watch history - apply grace period for new users
+                    # Grace period: Skip users who joined within the last 24 hours
+                    # Also fix users who were incorrectly added with recent dates (should be existing users)
+                    if uid in welcomed:
+                        try:
+                            join_date = datetime.fromisoformat(welcomed[uid])
+                            hours_since_join = (now - join_date).total_seconds() / 3600
+                            
+                            # If user has a very recent join date (< 24 hours), check if they're actually existing
+                            # Fix their date if they have createdAt older than their welcomed date
+                            if hours_since_join < 24:
+                                # Check if they have createdAt (they existed before being added to welcomed)
+                                if getattr(pu, "createdAt", None):
+                                    try:
+                                        created_at = pu.createdAt.replace(tzinfo=timezone.utc)
+                                        # If their actual createdAt is older than their welcomed date, fix it
+                                        if created_at < join_date:
+                                            welcomed[uid] = created_at.isoformat()
+                                            join_date = created_at
+                                            log(f"[inactive] {display}: Fixed join date from recent ({hours_since_join:.1f}h ago) to actual createdAt: {created_at.isoformat()}")
+                                            hours_since_join = (now - join_date).total_seconds() / 3600
+                                    except Exception:
+                                        pass
+                            
+                            if hours_since_join < 24:
+                                log(f"[inactive] skip NEW USER (24hr grace): {display} (joined {hours_since_join:.1f}h ago)")
+                                continue
+                        except Exception:
+                            pass
+                    
+                    # For users with no watch history, use their join date as the baseline (after 24hr grace)
+                    if last_watch is None and uid in welcomed:
+                        try:
+                            join_date = datetime.fromisoformat(welcomed[uid])
+                            # Add 24 hours to join date as the starting point for inactivity tracking
+                            last_watch = join_date + timedelta(hours=24)
+                        except Exception as e:
+                            # If we can't parse the existing join date, don't overwrite it
+                            # Try to use it anyway (might be a different format) or use createdAt fallback
+                            log_debug(f"[inactive] {display}: Could not parse existing welcomed date: {e}")
+                            # Don't overwrite existing welcomed entry
+                    
+                    # For existing users (not in welcomed dict), use createdAt + 24h to be fair
+                    if last_watch is None and uid not in welcomed and getattr(pu, "createdAt", None):
+                        try:
+                            created_at = pu.createdAt.replace(tzinfo=timezone.utc)
+                            # Add 24 hours to give existing users the same grace period
+                            last_watch = created_at + timedelta(hours=24)
+                            # Add them to welcomed dict for future tracking
+                            welcomed[uid] = created_at.isoformat()
+                            log(f"[inactive] {display}: Added to welcomed dict with createdAt: {created_at.isoformat()}")
+                        except Exception:
+                            pass
 
-                # If we still can't determine when they joined AND they're not in welcomed dict,
-                # Use a date far in the past (6 months ago) so they're treated as existing users
-                # This prevents them from getting a fresh 24h grace period (they're existing, not new)
-                if last_watch is None and uid not in welcomed:
-                    # Use 6 months ago as default join date for existing users with unknown join dates
-                    default_join_date = now - timedelta(days=180)
-                    welcomed[uid] = default_join_date.isoformat()
-                    # Use default join date + 24h as baseline for tracking
-                    last_watch = default_join_date + timedelta(hours=24)
-                    log(f"[inactive] {display}: No join date found, using default (6 months ago) for existing user")
-                    log(f"[inactive] {display}: Using default join date + 24h as baseline: {last_watch.isoformat()}")
+                    # If we still can't determine when they joined AND they're not in welcomed dict,
+                    # Use a date far in the past (6 months ago) so they're treated as existing users
+                    # This prevents them from getting a fresh 24h grace period (they're existing, not new)
+                    if last_watch is None and uid not in welcomed:
+                        # Use 6 months ago as default join date for existing users with unknown join dates
+                        default_join_date = now - timedelta(days=180)
+                        welcomed[uid] = default_join_date.isoformat()
+                        # Use default join date + 24h as baseline for tracking
+                        last_watch = default_join_date + timedelta(hours=24)
+                        log(f"[inactive] {display}: No join date found, using default (6 months ago) for existing user")
+                        log(f"[inactive] {display}: Using default join date + 24h as baseline: {last_watch.isoformat()}")
                 
                 # If still no last_watch and user is in welcomed (but date couldn't be parsed), skip gracefully
                 if last_watch is None:
@@ -1845,6 +1878,328 @@ def health_check_server():
         log_warn(f"[health] Failed to start health check server: {e}")
 
 # ============================================================================
+# CLI Commands for State Management
+# ============================================================================
+
+def find_user_by_identifier(identifier):
+    """Find user ID by email, username, or ID itself"""
+    try:
+        acct = get_plex_account()
+        users = acct.users()
+        
+        # Try matching by ID first
+        for u in users:
+            if str(u.id) == str(identifier):
+                return str(u.id), u
+        
+        # Try matching by email
+        identifier_lower = identifier.lower()
+        for u in users:
+            if u.email and u.email.lower() == identifier_lower:
+                return str(u.id), u
+        
+        # Try matching by username
+        for u in users:
+            if u.username and u.username.lower() == identifier_lower:
+                return str(u.id), u
+        
+        # Try matching by title/display name
+        for u in users:
+            if u.title and u.title.lower() == identifier_lower:
+                return str(u.id), u
+        
+        return None, None
+    except Exception as e:
+        log_error(f"[cli] Error finding user: {e}")
+        return None, None
+
+def cmd_remove_welcomed(identifier):
+    """Remove user from welcomed list"""
+    uid, user = find_user_by_identifier(identifier)
+    if not uid:
+        print(f"❌ User '{identifier}' not found in Plex")
+        return False
+    
+    state = load_state()
+    welcomed = state.get("welcomed", {})
+    
+    if uid not in welcomed:
+        print(f"ℹ️  User {user.title or user.username} (ID: {uid}) is not in welcomed list")
+        return False
+    
+    del welcomed[uid]
+    state["welcomed"] = welcomed
+    save_state(state)
+    
+    print(f"✅ Removed {user.title or user.username} (ID: {uid}) from welcomed list")
+    print(f"   They will receive a welcome email on the next scan")
+    return True
+
+def cmd_remove_warned(identifier):
+    """Remove user from warned list"""
+    uid, user = find_user_by_identifier(identifier)
+    if not uid:
+        print(f"❌ User '{identifier}' not found in Plex")
+        return False
+    
+    state = load_state()
+    warned = state.get("warned", {})
+    
+    if uid not in warned:
+        print(f"ℹ️  User {user.title or user.username} (ID: {uid}) is not in warned list")
+        return False
+    
+    del warned[uid]
+    state["warned"] = warned
+    save_state(state)
+    
+    print(f"✅ Removed {user.title or user.username} (ID: {uid}) from warned list")
+    return True
+
+def cmd_remove_removed(identifier):
+    """Remove user from removed list"""
+    uid, user = find_user_by_identifier(identifier)
+    if not uid:
+        print(f"❌ User '{identifier}' not found in Plex")
+        return False
+    
+    state = load_state()
+    removed = state.get("removed", {})
+    
+    if uid not in removed:
+        print(f"ℹ️  User {user.title or user.username} (ID: {uid}) is not in removed list")
+        return False
+    
+    del removed[uid]
+    state["removed"] = removed
+    save_state(state)
+    
+    print(f"✅ Removed {user.title or user.username} (ID: {uid}) from removed list")
+    return True
+
+def cmd_reset_user(identifier):
+    """Remove user from all lists (complete reset)"""
+    uid, user = find_user_by_identifier(identifier)
+    if not uid:
+        print(f"❌ User '{identifier}' not found in Plex")
+        return False
+    
+    state = load_state()
+    welcomed = state.get("welcomed", {})
+    warned = state.get("warned", {})
+    removed = state.get("removed", {})
+    
+    removed_from = []
+    if uid in welcomed:
+        del welcomed[uid]
+        removed_from.append("welcomed")
+    if uid in warned:
+        del warned[uid]
+        removed_from.append("warned")
+    if uid in removed:
+        del removed[uid]
+        removed_from.append("removed")
+    
+    if not removed_from:
+        print(f"ℹ️  User {user.title or user.username} (ID: {uid}) is not in any tracking list")
+        return False
+    
+    state["welcomed"] = welcomed
+    state["warned"] = warned
+    state["removed"] = removed
+    save_state(state)
+    
+    print(f"✅ Reset {user.title or user.username} (ID: {uid})")
+    print(f"   Removed from: {', '.join(removed_from)}")
+    if "welcomed" in removed_from:
+        print(f"   They will receive a welcome email on the next scan")
+    return True
+
+def cmd_list_welcomed():
+    """List all welcomed users"""
+    state = load_state()
+    welcomed = state.get("welcomed", {})
+    
+    if not welcomed:
+        print("ℹ️  No users in welcomed list")
+        return
+    
+    try:
+        acct = get_plex_account()
+        users = acct.users()
+        user_map = {str(u.id): u for u in users}
+        
+        print(f"✅ Welcomed Users ({len(welcomed)}):")
+        print("-" * 80)
+        for uid, join_date in sorted(welcomed.items(), key=lambda x: x[1]):
+            user = user_map.get(uid)
+            if user:
+                print(f"  • {user.title or user.username} ({user.email or 'no email'}) - ID: {uid}")
+                print(f"    Joined: {join_date}")
+            else:
+                print(f"  • User ID: {uid} (not found in Plex)")
+                print(f"    Joined: {join_date}")
+    except Exception as e:
+        print(f"❌ Error listing users: {e}")
+
+def cmd_list_warned():
+    """List all warned users"""
+    state = load_state()
+    warned = state.get("warned", {})
+    
+    if not warned:
+        print("ℹ️  No users in warned list")
+        return
+    
+    try:
+        acct = get_plex_account()
+        users = acct.users()
+        user_map = {str(u.id): u for u in users}
+        
+        print(f"⚠️  Warned Users ({len(warned)}):")
+        print("-" * 80)
+        for uid, warn_date in sorted(warned.items(), key=lambda x: x[1]):
+            user = user_map.get(uid)
+            if user:
+                print(f"  • {user.title or user.username} ({user.email or 'no email'}) - ID: {uid}")
+                print(f"    Warned: {warn_date}")
+            else:
+                print(f"  • User ID: {uid} (not found in Plex)")
+                print(f"    Warned: {warn_date}")
+    except Exception as e:
+        print(f"❌ Error listing users: {e}")
+
+def cmd_list_removed():
+    """List all removed users"""
+    state = load_state()
+    removed = state.get("removed", {})
+    
+    if not removed:
+        print("ℹ️  No users in removed list")
+        return
+    
+    try:
+        acct = get_plex_account()
+        users = acct.users()
+        user_map = {str(u.id): u for u in users}
+        
+        print(f"🚫 Removed Users ({len(removed)}):")
+        print("-" * 80)
+        for uid, removal_info in sorted(removed.items(), key=lambda x: x[1].get("when", "")):
+            if isinstance(removal_info, dict):
+                when = removal_info.get("when", "unknown")
+                reason = removal_info.get("reason", "unknown")
+                ok = removal_info.get("ok", False)
+                status = "✅" if ok else "❌"
+            else:
+                when = removal_info if isinstance(removal_info, str) else "unknown"
+                reason = "unknown"
+                ok = True
+                status = "?"
+            
+            user = user_map.get(uid)
+            if user:
+                print(f"  {status} {user.title or user.username} ({user.email or 'no email'}) - ID: {uid}")
+                print(f"    Removed: {when}")
+                print(f"    Reason: {reason}")
+            else:
+                print(f"  {status} User ID: {uid} (not found in Plex)")
+                print(f"    Removed: {when}")
+                print(f"    Reason: {reason}")
+    except Exception as e:
+        print(f"❌ Error listing users: {e}")
+
+def cmd_help():
+    """Show help for CLI commands"""
+    print("Centauri Guardian CLI Commands")
+    print("=" * 80)
+    print()
+    print("Usage: python main.py <command> [identifier]")
+    print()
+    print("Commands:")
+    print("  remove-welcomed <email|username|id>  - Remove user from welcomed list")
+    print("  remove-warned <email|username|id>     - Remove user from warned list")
+    print("  remove-removed <email|username|id>    - Remove user from removed list")
+    print("  reset-user <email|username|id>        - Remove user from all lists")
+    print("  list-welcomed                         - List all welcomed users")
+    print("  list-warned                           - List all warned users")
+    print("  list-removed                          - List all removed users")
+    print("  test-discord                          - Send test Discord notifications")
+    print()
+    print("Examples:")
+    print("  python main.py remove-welcomed 'test@example.com'")
+    print("  python main.py remove-welcomed 'testuser'")
+    print("  python main.py remove-welcomed '123456789'")
+    print("  python main.py reset-user 'test@example.com'")
+    print("  python main.py list-welcomed")
+    print()
+
+def handle_cli_command():
+    """Handle CLI commands - returns True if command was handled, False otherwise"""
+    if len(sys.argv) < 2:
+        return False
+    
+    command = sys.argv[1].lower()
+    
+    if command == "help" or command == "-h" or command == "--help":
+        cmd_help()
+        return True
+    
+    if command == "remove-welcomed":
+        if len(sys.argv) < 3:
+            print("❌ Error: Please provide user identifier (email, username, or ID)")
+            print("   Example: python main.py remove-welcomed 'test@example.com'")
+            return True
+        identifier = " ".join(sys.argv[2:])
+        cmd_remove_welcomed(identifier)
+        return True
+    
+    if command == "remove-warned":
+        if len(sys.argv) < 3:
+            print("❌ Error: Please provide user identifier (email, username, or ID)")
+            print("   Example: python main.py remove-warned 'test@example.com'")
+            return True
+        identifier = " ".join(sys.argv[2:])
+        cmd_remove_warned(identifier)
+        return True
+    
+    if command == "remove-removed":
+        if len(sys.argv) < 3:
+            print("❌ Error: Please provide user identifier (email, username, or ID)")
+            print("   Example: python main.py remove-removed 'test@example.com'")
+            return True
+        identifier = " ".join(sys.argv[2:])
+        cmd_remove_removed(identifier)
+        return True
+    
+    if command == "reset-user":
+        if len(sys.argv) < 3:
+            print("❌ Error: Please provide user identifier (email, username, or ID)")
+            print("   Example: python main.py reset-user 'test@example.com'")
+            return True
+        identifier = " ".join(sys.argv[2:])
+        cmd_reset_user(identifier)
+        return True
+    
+    if command == "list-welcomed":
+        cmd_list_welcomed()
+        return True
+    
+    if command == "list-warned":
+        cmd_list_warned()
+        return True
+    
+    if command == "list-removed":
+        cmd_list_removed()
+        return True
+    
+    if command == "test-discord":
+        test_discord_notifications()
+        return True
+    
+    return False
+
+# ============================================================================
 # Signal Handlers & Graceful Shutdown
 # ============================================================================
 
@@ -1875,9 +2230,8 @@ if __name__ == "__main__":
     # Register shutdown handler
     atexit.register(graceful_shutdown)
     
-    # Check for test command
-    if len(sys.argv) > 1 and sys.argv[1] == "test-discord":
-        test_discord_notifications()
+    # Check for CLI commands first
+    if handle_cli_command():
         sys.exit(0)
     
     log_info("Centauri Guardian daemon starting...")
