@@ -187,7 +187,7 @@ VIP_NAMES_STR = os.environ.get("VIP_NAMES", "")
 VIP_NAMES = [name.strip().lower() for name in VIP_NAMES_STR.split(",") if name.strip()]
 
 # Health check port
-HEALTH_CHECK_PORT = validate_int(os.environ.get("HEALTH_CHECK_PORT", "8080"), 8080, 1024, 65535)
+HEALTH_CHECK_PORT = validate_int(os.environ.get("HEALTH_CHECK_PORT", "9000"), 9000, 1024, 65535)
 
 STATE_DIR = "/app/state"
 STATE_FILE = f"{STATE_DIR}/state.json"
