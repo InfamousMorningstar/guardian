@@ -1305,8 +1305,13 @@ def fast_join_watcher():
                 
             now = datetime.now(timezone.utc)
             
+            # Check if this is the first scan (before cleanup logic)
+            # On first scan, don't cleanup departed users - we're still building the welcomed list
+            is_first_scan_check = tick == 1 or len(welcomed) == 0
+            
             # Clean up departed users - remove from all tracking dicts (welcomed, warned, removed) if no longer in Plex
             # Use TWO API calls to verify they're truly gone (prevents false positives from API failures)
+            # Skip cleanup on first scan to avoid removing users before they're processed
             warned = state.get("warned", {})
             removed = state.get("removed", {})
             current_user_ids = {str(u.id) for u in friends}
@@ -1316,7 +1321,8 @@ def fast_join_watcher():
             potentially_departed = [uid for uid in all_tracked_ids if uid not in current_user_ids]
             departed_count = 0
             
-            if potentially_departed:
+            # Only run cleanup if NOT first scan (to avoid false positives)
+            if potentially_departed and not is_first_scan_check:
                 log(f"[join] Found {len(potentially_departed)} potentially departed users, verifying...")
                 time.sleep(2)  # Brief pause before second check
                 
@@ -1373,7 +1379,10 @@ def fast_join_watcher():
             
             # Check if this is the first scan (welcomed dict is empty or very small)
             # On first scan, all users are existing - add them silently without emails
-            is_first_scan = len(welcomed) == 0 or (len(welcomed) < 3 and tick == 1)
+            # Use tick == 1 as primary indicator, or empty welcomed dict
+            # Note: is_first_scan_check was already calculated above, but we recalculate here
+            # using the current welcomed dict (which may have been updated during cleanup)
+            is_first_scan = tick == 1 or len(welcomed) == 0
             
             new_count = 0
             for u in friends:
@@ -1381,30 +1390,36 @@ def fast_join_watcher():
                 if uid in welcomed:
                     continue
                 
-                display = u.title or u.username or "there"
-                user_email = (u.email or "").lower()
-                
-                # Check if user is VIP (skip welcome emails for VIPs)
-                is_vip = False
-                if user_email in VIP_EMAILS:
-                    is_vip = True
-                elif display.lower() in VIP_NAMES:
-                    is_vip = True
-                
-                # First scan: All users are existing users - add them silently (no emails)
-                if is_first_scan:
-                    # Use Plex createdAt if available, otherwise use current time as join date
-                    created = None
-                    try:
-                        if getattr(u, "createdAt", None):
-                            created = u.createdAt.replace(tzinfo=timezone.utc)
-                    except Exception:
-                        pass
-                    join_date = created if created else now
+                try:
+                    display = u.title or u.username or "there"
+                    user_email = (u.email or "").lower()
                     
-                    log(f"[join] EXISTING (first scan, silent track): {display} ({u.email or 'no email'}) id={uid} - join date: {join_date.isoformat()}")
-                    welcomed[uid] = join_date.isoformat()
-                    new_count += 1
+                    # Check if user is VIP (skip welcome emails for VIPs)
+                    is_vip = False
+                    if user_email in VIP_EMAILS:
+                        is_vip = True
+                    elif display.lower() in VIP_NAMES:
+                        is_vip = True
+                    
+                    # First scan: All users are existing users - add them silently (no emails)
+                    if is_first_scan:
+                        # Use Plex createdAt if available, otherwise use current time as join date
+                        created = None
+                        try:
+                            if getattr(u, "createdAt", None):
+                                created = u.createdAt.replace(tzinfo=timezone.utc)
+                        except Exception:
+                            pass
+                        join_date = created if created else now
+                        
+                        log(f"[join] EXISTING (first scan, silent track): {display} ({u.email or 'no email'}) id={uid} - join date: {join_date.isoformat()}")
+                        welcomed[uid] = join_date.isoformat()
+                        new_count += 1
+                        continue
+                except Exception as e:
+                    log_error(f"[join] Error processing user ID {uid}: {e}")
+                    traceback.print_exc()
+                    # Continue to next user - don't skip processing other users due to one error
                     continue
                 
                 # After first scan: User not in welcomed = truly new user
@@ -1446,6 +1461,26 @@ def fast_join_watcher():
                 metrics["users_welcomed"] += 1
             if new_count == 0:
                 log("[join] no new users")
+            
+            # Summary: Log all users detected vs tracked
+            total_users_in_plex = len(friends)
+            total_tracked = len(welcomed)
+            if total_users_in_plex != total_tracked:
+                log_warn(f"[join] User count mismatch: {total_users_in_plex} users in Plex, but {total_tracked} in welcomed dict")
+                # Log which users are in Plex but not tracked
+                plex_user_ids = {str(u.id) for u in friends}
+                tracked_user_ids = set(welcomed.keys())
+                missing_users = plex_user_ids - tracked_user_ids
+                if missing_users:
+                    missing_details = []
+                    for mu_id in missing_users:
+                        for u in friends:
+                            if str(u.id) == mu_id:
+                                missing_details.append(f"{u.title or u.username} (ID: {mu_id})")
+                                break
+                    log_warn(f"[join] Users in Plex but not in welcomed dict: {', '.join(missing_details)}")
+            else:
+                log_debug(f"[join] All {total_users_in_plex} users are tracked in welcomed dict")
             
             # Always save state to persist welcomed dict updates
             log_debug(f"[join] Saving state with {len(welcomed)} users in welcomed dict")
